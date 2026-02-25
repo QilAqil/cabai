@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Dashboard Pertanian IoT</title>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+body{
+  font-family: Arial;
+  background:#eef2f3;
+  text-align:center;
+  padding:30px;
+}
+.card{
+  background:white;
+  padding:20px;
+  width:380px;
+  margin:auto;
+  border-radius:10px;
+  box-shadow:0 0 10px rgba(0,0,0,0.2);
+}
+h2{color:#2c3e50;}
+.data{
+  font-size:16px;
+  margin:8px 0;
+}
+.status{
+  font-weight:bold;
+  margin-top:15px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="card">
+  <h2>Monitoring Pertanian IoT</h2>
+
+  <div class="data">Suhu: <span id="temp">-</span> °C</div>
+  <div class="data">Kelembaban: <span id="hum">-</span> %</div>
+  <div class="data">Kelembaban Tanah: <span id="soil">-</span> %</div>
+  <div class="data">pH Tanah: <span id="ph">-</span></div>
+
+  <hr>
+
+  <div class="data">Fuzzy Air: <span id="fuzzy_air">-</span></div>
+  <div class="data">Fuzzy pH: <span id="fuzzy_ph">-</span></div>
+
+  <hr>
+
+  <div class="data">Relay Air: <span id="relay_air">-</span></div>
+  <div class="data">Relay Dolomit: <span id="relay_dolomit">-</span></div>
+
+  <div class="status" id="status">Disconnected</div>
+</div>
+
+<script>
+const host = "wss://n01d3130.ala.asia-southeast1.emqxsl.com:8084/mqtt";
+const topicPub = "pertanian/sensor";
+
+const options = {
+  username: "pertanian",
+  password: "pertanian12",
+  reconnectPeriod: 2000
+};
+
+const client = mqtt.connect(host, options);
+
+client.on("connect", function () {
+  document.getElementById("status").innerText = "Connected";
+  client.subscribe(topicPub);
+});
+
+client.on("message", function (topic, message) {
+
+  const data = JSON.parse(message.toString());
+
+  document.getElementById("temp").innerText = data.temperature ?? "-";
+  document.getElementById("hum").innerText = data.humidity ?? "-";
+  document.getElementById("soil").innerText = data.soil ?? "-";
+  document.getElementById("ph").innerText = data.ph ?? "-";
+
+  document.getElementById("fuzzy_air").innerText = data.fuzzy_air ?? "-";
+  document.getElementById("fuzzy_ph").innerText = data.fuzzy_ph ?? "-";
+
+  const relayAir = (data.relay_air === true) || (data.relay_air === 1) || (data.relay_air === "1") || (data.relay_air === "true");
+  const relayDol = (data.relay_dolomit === true) || (data.relay_dolomit === 1) || (data.relay_dolomit === "1") || (data.relay_dolomit === "true");
+
+  document.getElementById("relay_air").innerText = relayAir ? "ON" : "OFF";
+  document.getElementById("relay_dolomit").innerText = relayDol ? "ON" : "OFF";
+});
+
+client.on("error", function () {
+  document.getElementById("status").innerText = "Connection Failed";
+});
+</script>
+
+</body>
+</html>

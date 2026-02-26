@@ -340,7 +340,7 @@ client.on("error", function () {
 // diasumsikan ESP32 offline sehingga WiFi dianggap Disconnected di dashboard.
 setInterval(function () {
   const now = Date.now();
-  const timeoutMs = 20000; // 20 detik tanpa data dianggap offline
+  const timeoutMs = 15000; // 15 detik tanpa data dianggap offline
   if (lastSensorMessageTs === 0) return;
   if (now - lastSensorMessageTs > timeoutMs) {
     const wifiStatusEl = document.getElementById("wifiStatus");

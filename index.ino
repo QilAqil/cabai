@@ -10,10 +10,10 @@
  *   - Input 1  : kelembaban tanah (Kering, Lembab, Basah)
  *   - Input 2  : pH tanah (Asam, Netral, Basa)
  *   - Output   : dua skor fuzzy (waterScore & dolomitScore)
- *   - Keputusan: mengendalikan relay pompa air & relay dolomit (otomatis / manual via MQTT)
+ *   - Keputusan: mengendalikan relay pompa air & relay dolomit (otomatis via MQTT)
  * - Koneksi:
  *   - WiFi STA ke SSID laboratorium
- *   - MQTT TLS (EMQX) untuk publish data sensor ke dashboard web & menerima perintah manual
+ *   - MQTT TLS (EMQX) untuk publish data sensor ke dashboard web
  *   - Supabase REST API untuk menyimpan log data ke database (tabel 'pertanian')
  *
  * Catatan penting:
@@ -128,16 +128,33 @@ float pH_value;        // nilai pH saat ini
 // =========================
 // Fuzzy Tahani 3x3 (Sugeno)
 // =========================
-// Di sini fuzzy digunakan sebagai "mesin rekomendasi" untuk menghidupkan relay berdasarkan
-// kombinasi kelembaban tanah & pH tanah. Model mengikuti konsep Tahani:
-// - Fuzzifikasi: soil% -> {Kering, Lembab, Basah}, pH -> {Asam, Netral, Basa}
-// - Aturan (rule base 3x3): kombinasi 3x3 menghasilkan dua output:
-//     - Water_OUT   : seberapa kuat perlu penyiraman
-//     - Dolomit_OUT : seberapa kuat perlu penambahan dolomit
-// - Inferensi: menggunakan operator MIN (Zadeh) untuk AND.
-// - Defuzzifikasi: memakai model Sugeno singleton (output berupa angka tetap per rule),
-//   kemudian dihitung rata-rata berbobot (weighted average).
-// Nilai akhir (0..1) kemudian dibandingkan dengan ambang 0.5 untuk memutuskan ON/OFF relay.
+//
+// Kesesuaian dengan dokumen "Logika Fuzzy dan Metode Fuzzy Tahani" (fuzzy.text):
+//
+// 1. MEMBERSHIP FUNCTION (fuzzy.text: "inti sistem fuzzy", nilai 0–1)
+//    - Kelembaban tanah: Kering (trapesium), Lembab (segitiga), Basah (trapesium).
+//      Contoh dokumen: "kering 0–50%", "lembab 30–70%" → diimplementasi dengan overlap
+//      trapmf(0,0,30,50), trimf(30,50,70), trapmf(60,80,100,100).
+//    - pH tanah: Asam, Netral, Basa (semua trapesium). Dokumen: "pH optimal 6–6,8 netral"
+//      → Netral pakai trapmf dengan plateau 6–6,8.
+//    - Jenis kurva: dokumen menyebut "kurva segitiga atau trapesium lebih efisien" untuk IoT ✅
+//
+// 2. FUZZIFIKASI (fuzzy.text: "nilai tegas → derajat keanggotaan")
+//    - Input: soil% dan pH. Output: muMoist[3], muPH[3] (derajat untuk tiap himpunan). ✅
+//
+// 3. FIRE STRENGTH / OPERATOR ZADEH (fuzzy.text: "Interseksi AND = min(μA, μB)")
+//    - Bobot tiap rule: w_ij = min(μA_i, μB_j). Di kode: min(muA[i], muB[j]). ✅
+//
+// 4. REKOMENDASI KEPUTUSAN (fuzzy.text: "fire strength 0–1, alternatif nilai tertinggi")
+//    - Di sini dua keluaran (penyiraman & dolomit). Agregasi pakai model Sugeno singleton:
+//      crisp = Σ(w_ij * z_ij) / Σ(w_ij). Nilai crisp 0..1 lalu di-ambang 0.5 → ON/OFF relay.
+//    - "Alternatif nilai tertinggi" diwujudkan sebagai: skor > 0.5 = rekomendasi jalankan. ✅
+//
+// 5. RINGKASAN ALUR
+//    - Fuzzifikasi: soil% & pH → muMoist[3], muPH[3].
+//    - Inferensi: AND = min (Tahani/Zadeh); setiap rule (i,j) punya singleton z_ij.
+//    - Defuzzifikasi: weighted average (Sugeno).
+//    - Keputusan: waterOn = (waterScore >= 0.5), dolomitOn = (dolomitScore >= 0.5).
 
 static float trimf(float x, float a, float b, float c) {
   // Fungsi keanggotaan segitiga:

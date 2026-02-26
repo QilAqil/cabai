@@ -1,98 +1,355 @@
 <!DOCTYPE html>
+<!--
+  Dashboard web untuk sistem pertanian IoT.
+  Halaman ini:
+  - Terkoneksi ke broker MQTT EMQX via WebSocket (wss).
+  - Subscribe topic "pertanian/sensor" yang dikirim ESP32.
+  - Menampilkan data sensor (suhu, kelembaban udara, kelembaban tanah, pH tanah),
+    hasil fuzzy (fuzzy_air, fuzzy_ph), status relay, dan status WiFi ESP32.
+-->
 <html>
 <head>
-<meta charset="UTF-8">
-<title>Dashboard Pertanian IoT</title>
-<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-<style>
+  <!-- Pengaturan encoding karakter dan viewport agar tampilan responsive di mobile -->
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Judul tab browser -->
+  <title>Dashboard Pertanian IoT</title>
+
+  <!-- Library MQTT client untuk JavaScript (via CDN) -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+  <!-- CSS internal: mengatur tampilan dashboard -->
+  <style>
+/* Variabel warna dan style dasar (CSS custom properties) */
+:root{
+  --primary:#9CD5FF;
+  --primary-dark:#5aa6d4;
+  --bg:#e9f5ff;
+  --card-bg:#ffffff;
+  --text-main:#123047;
+  --text-muted:#5b6b7a;
+}
+/* Reset margin/padding dasar dan memastikan box-sizing konsisten */
+*{
+  box-sizing:border-box;
+  margin:0;
+  padding:0;
+}
+/* Style untuk body: latar gradasi, layout center, font utama */
 body{
-  font-family: Arial;
-  background:#eef2f3;
-  text-align:center;
-  padding:30px;
+  font-family: Arial, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: radial-gradient(circle at top, #c9e8ff 0, #9CD5FF 20%, #e9f5ff 60%, #ffffff 100%);
+  min-height:100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:16px;
+  color:var(--text-main);
 }
+/* Pembungkus utama konten agar lebar maksimal tidak terlalu besar */
+.wrapper{
+  width:100%;
+  max-width:960px;
+}
+/* Header di bagian atas (judul + subjudul) */
+.header{
+  text-align:left;
+  margin-bottom:16px;
+}
+.title{
+  font-size:1.6rem;
+  font-weight:700;
+  color:var(--text-main);
+}
+.subtitle{
+  font-size:0.9rem;
+  color:var(--text-muted);
+  margin-top:4px;
+}
+/* Grid responsif untuk menata tiga kartu (Lingkungan, Tanah, Fuzzy) */
+.grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+  gap:16px;
+}
+/* Style umum setiap card (kotak informasi) */
 .card{
-  background:white;
-  padding:20px;
-  width:380px;
-  margin:auto;
+  background:var(--card-bg);
+  border-radius:16px;
+  padding:18px 18px 16px;
+  box-shadow:0 10px 25px rgba(0,0,0,0.06);
+  border:1px solid rgba(0,0,0,0.03);
+}
+/* Header dalam card: judul card + area untuk badge bila diperlukan */
+.card-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:10px;
+}
+.card-title{
+  font-size:0.95rem;
+  font-weight:600;
+  color:var(--text-main);
+}
+/* Badge kecil berbentuk pil (dipakai untuk status) */
+.pill{
+  padding:4px 10px;
+  border-radius:999px;
+  font-size:0.7rem;
+  font-weight:600;
+  letter-spacing:0.04em;
+  text-transform:uppercase;
+  background:rgba(0,0,0,0.04);
+  color:var(--text-muted);
+}
+.pill.ok{
+  background:rgba(0,150,0,0.08);
+  color:#0c7a24;
+}
+.pill.err{
+  background:rgba(200,0,0,0.08);
+  color:#a01111;
+}
+/* Baris metric (label di kiri, nilai di kanan) */
+.metric-row{
+  display:flex;
+  justify-content:space-between;
+  align-items:baseline;
+  margin:4px 0;
+}
+.metric-label{
+  font-size:0.8rem;
+  color:var(--text-muted);
+}
+.metric-value{
+  font-size:1.1rem;
+  font-weight:600;
+  color:var(--text-main);
+}
+.metric-unit{
+  font-size:0.8rem;
+  color:var(--text-muted);
+  margin-left:4px;
+}
+/* Container untuk dua badge relay (Air & Dolomit) */
+.relay-row{
+  display:flex;
+  justify-content:space-between;
+  margin-top:8px;
+}
+.relay-badge{
+  flex:1;
+  margin:0 4px;
+  padding:8px 10px;
   border-radius:10px;
-  box-shadow:0 0 10px rgba(0,0,0,0.2);
+  font-size:0.8rem;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  background:rgba(0,0,0,0.02);
 }
-h2{color:#2c3e50;}
-.data{
-  font-size:16px;
-  margin:8px 0;
+.relay-label{
+  color:var(--text-muted);
 }
-.status{
-  font-weight:bold;
-  margin-top:15px;
+.relay-status{
+  font-weight:700;
+}
+.relay-status.on{
+  color:#0c7a24;
+}
+.relay-status.off{
+  color:#a01111;
+}
+/* Bagian status di bawah layout (WiFi, IP, MQTT) */
+.footer-status{
+  margin-top:12px;
+  font-size:0.8rem;
+  text-align:right;
+  color:var(--text-muted);
+}
+/* Penyesuaian tampilan untuk layar kecil (mobile) */
+@media (max-width:600px){
+  .title{
+    font-size:1.3rem;
+  }
+  .wrapper{
+    max-width:100%;
+  }
 }
 </style>
 </head>
 
 <body>
+<div class="wrapper">
+  <div class="header">
+    <div class="title">Monitoring Pertanian IoT</div>
+    <div class="subtitle">Realtime dari ESP32 &amp; MQTT EMQX</div>
+  </div>
 
-<div class="card">
-  <h2>Monitoring Pertanian IoT</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Lingkungan</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-label">Suhu</div>
+        <div class="metric-value">
+          <span id="temp">-</span><span class="metric-unit">°C</span>
+        </div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-label">Kelembaban Udara</div>
+        <div class="metric-value">
+          <span id="hum">-</span><span class="metric-unit">%</span>
+        </div>
+      </div>
+    </div>
 
-  <div class="data">Suhu: <span id="temp">-</span> °C</div>
-  <div class="data">Kelembaban: <span id="hum">-</span> %</div>
-  <div class="data">Kelembaban Tanah: <span id="soil">-</span> %</div>
-  <div class="data">pH Tanah: <span id="ph">-</span></div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Tanah</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-label">Kelembaban Tanah</div>
+        <div class="metric-value">
+          <span id="soil">-</span><span class="metric-unit">%</span>
+        </div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-label">pH Tanah</div>
+        <div class="metric-value">
+          <span id="ph">-</span>
+        </div>
+      </div>
+    </div>
 
-  <hr>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Fuzzy Decision</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-label">Fuzzy Air</div>
+        <div class="metric-value">
+          <span id="fuzzy_air">-</span>
+        </div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-label">Fuzzy pH</div>
+        <div class="metric-value">
+          <span id="fuzzy_ph">-</span>
+        </div>
+      </div>
+      <div class="relay-row">
+        <div class="relay-badge">
+          <span class="relay-label">Relay Air</span>
+          <span id="relay_air" class="relay-status off">OFF</span>
+        </div>
+        <div class="relay-badge">
+          <span class="relay-label">Relay Dolomit</span>
+          <span id="relay_dolomit" class="relay-status off">OFF</span>
+        </div>
+      </div>
+    </div>
+  </div>
 
-  <div class="data">Fuzzy Air: <span id="fuzzy_air">-</span></div>
-  <div class="data">Fuzzy pH: <span id="fuzzy_ph">-</span></div>
-
-  <hr>
-
-  <div class="data">Relay Air: <span id="relay_air">-</span></div>
-  <div class="data">Relay Dolomit: <span id="relay_dolomit">-</span></div>
-
-  <div class="status" id="status">Disconnected</div>
+  <div class="footer-status">
+    <!-- Status WiFi & MQTT ditampilkan di bagian bawah dashboard -->
+    WiFi: <span id="wifiStatus" class="pill err">Unknown</span>
+    &nbsp;|&nbsp; IP: <span id="wifiIp">-</span>
+    &nbsp;|&nbsp; MQTT: <span id="status" class="pill err">Disconnected</span>
+  </div>
 </div>
 
 <script>
+// Alamat WebSocket MQTT EMQX (port 8084 untuk wss)
 const host = "wss://n01d3130.ala.asia-southeast1.emqxsl.com:8084/mqtt";
+// Topic yang dipublish ESP32 untuk data sensor
 const topicPub = "pertanian/sensor";
 
+// Opsi koneksi MQTT (username, password, dan auto-reconnect)
 const options = {
   username: "pertanian",
   password: "pertanian12",
   reconnectPeriod: 2000
 };
 
+// Menyimpan waktu pesan sensor terakhir diterima (dipakai untuk mendeteksi ESP32 offline)
+let lastSensorMessageTs = 0;
+
+// Membuat koneksi MQTT client
 const client = mqtt.connect(host, options);
 
+// Event: ketika koneksi ke broker berhasil
 client.on("connect", function () {
-  document.getElementById("status").innerText = "Connected";
+  const mqttStatus = document.getElementById("status");
+  mqttStatus.innerText = "Connected";
+  mqttStatus.classList.remove("err");
+  mqttStatus.classList.add("ok");
   client.subscribe(topicPub);
 });
 
 client.on("message", function (topic, message) {
 
+  // Parsing payload JSON yang dikirim ESP32
   const data = JSON.parse(message.toString());
+  lastSensorMessageTs = Date.now();
 
+  // Update nilai sensor lingkungan
   document.getElementById("temp").innerText = data.temperature ?? "-";
   document.getElementById("hum").innerText = data.humidity ?? "-";
   document.getElementById("soil").innerText = data.soil ?? "-";
-  document.getElementById("ph").innerText = data.ph ?? "-";
+  // pH dibulatkan 1 angka di belakang koma, jika ada
+  const phVal = data.ph ?? null;
+  document.getElementById("ph").innerText =
+    phVal === null || phVal === "-" ? "-" : Number(phVal).toFixed(1);
 
+  // Update nilai fuzzy (skor rekomendasi)
   document.getElementById("fuzzy_air").innerText = data.fuzzy_air ?? "-";
   document.getElementById("fuzzy_ph").innerText = data.fuzzy_ph ?? "-";
 
+  // Status relay dikirim sebagai 0/1 atau boolean; normalisasi jadi true/false
   const relayAir = (data.relay_air === true) || (data.relay_air === 1) || (data.relay_air === "1") || (data.relay_air === "true");
   const relayDol = (data.relay_dolomit === true) || (data.relay_dolomit === 1) || (data.relay_dolomit === "1") || (data.relay_dolomit === "true");
 
   document.getElementById("relay_air").innerText = relayAir ? "ON" : "OFF";
   document.getElementById("relay_dolomit").innerText = relayDol ? "ON" : "OFF";
+
+  // Status WiFi dikirim ESP32 via field wifi_connected dan wifi_ip
+  const wifiConnected = (data.wifi_connected === true) || (data.wifi_connected === 1) || (data.wifi_connected === "1") || (data.wifi_connected === "true");
+  const wifiIp = data.wifi_ip || "-";
+
+  const wifiStatusEl = document.getElementById("wifiStatus");
+  wifiStatusEl.innerText = wifiConnected ? "Connected" : "Disconnected";
+  wifiStatusEl.classList.toggle("ok", wifiConnected);
+  wifiStatusEl.classList.toggle("err", !wifiConnected);
+
+  document.getElementById("wifiIp").innerText = wifiIp;
 });
 
+// Event: jika ada error koneksi MQTT (misalnya broker tidak bisa diakses)
 client.on("error", function () {
-  document.getElementById("status").innerText = "Connection Failed";
+  const mqttStatus = document.getElementById("status");
+  mqttStatus.innerText = "Connection Failed";
+  mqttStatus.classList.remove("ok");
+  mqttStatus.classList.add("err");
 });
+
+// Timer periodik: jika dalam beberapa detik tidak ada pesan sensor baru,
+// diasumsikan ESP32 offline sehingga WiFi dianggap Disconnected di dashboard.
+setInterval(function () {
+  const now = Date.now();
+  const timeoutMs = 20000; // 20 detik tanpa data dianggap offline
+  if (lastSensorMessageTs === 0) return;
+  if (now - lastSensorMessageTs > timeoutMs) {
+    const wifiStatusEl = document.getElementById("wifiStatus");
+    wifiStatusEl.innerText = "Disconnected";
+    wifiStatusEl.classList.remove("ok");
+    wifiStatusEl.classList.add("err");
+    document.getElementById("wifiIp").innerText = "-";
+  }
+}, 5000);
 </script>
 
 </body>

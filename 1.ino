@@ -1,27 +1,6 @@
-/*
- * Sistem Monitoring & Kontrol Pertanian IoT Berbasis ESP32
- *
- * Fitur utama:
- * - Membaca:
- *   - Suhu & kelembaban udara (DHT11)
- *   - Kelembaban tanah (soil moisture analog)
- *   - pH tanah (sensor pH dengan driver DMS)
- * - Logika Fuzzy Tahani 3x3:
- *   - Input 1  : kelembaban tanah (Kering, Lembab, Basah)
- *   - Input 2  : pH tanah (Asam, Netral, Basa)
- *   - Output   : dua skor fuzzy (waterScore & dolomitScore)
- *   - Keputusan: mengendalikan relay pompa air & relay dolomit (otomatis / manual via MQTT)
- * - Koneksi:
- *   - WiFi STA ke SSID laboratorium
- *   - MQTT TLS (EMQX) untuk publish data sensor ke dashboard web & menerima perintah manual
- *   - Supabase REST API untuk menyimpan log data ke database (tabel 'pertanian')
- *
- * Catatan penting:
- * - Comment di file ini fokus ke penjelasan konsep, arsitektur, dan alasan pemilihan nilai,
- *   bukan sekadar menjelaskan operasi kode yang sudah jelas (misalnya "digitalWrite HIGH/LOW").
- * - Banyak parameter (batas membership fuzzy, ambang pH, mapping soil) bisa dikalibrasi ulang
- *   sesuai data lapangan, namun disini diset berdasarkan literatur & contoh di dokumen fuzzy.
- */
+
+// ESP32 + Soil Moisture Sensor (analog) + DHT11
+// Baca kelembaban tanah, suhu, dan kelembaban udara, lalu tampilkan ke Serial Monitor
 
 #include <DHT.h>
 #include <WiFi.h>
@@ -30,94 +9,58 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
-// ==========================
-// Konfigurasi Sensor DHT11
-// ==========================
-// DHT11 digunakan untuk mendapatkan suhu & kelembaban udara lingkungan sekitar.
-// Hasilnya dipakai untuk monitoring dan dikirim ke MQTT & Supabase,
-// tetapi TIDAK ikut masuk ke logika fuzzy Tahani (fuzzy fokus ke tanah & pH).
+// Konfigurasi DHT11
 const int DHTPIN  = 4;       // Pin data DHT11 (ubah sesuai wiring Anda, misal GPIO4)
 const int DHTTYPE = DHT11;
 DHT dht(DHTPIN, DHTTYPE);
 
-// ===========
-// Konfigurasi WiFi
-// ===========
-// Mode yang dipakai: station (WIFI_STA), terkoneksi ke AP laboratorium.
-// SSID & password hard-coded karena lingkungan sudah tetap (bukan user-facing product).
+// ===== WiFi =====
 const char* WIFI_SSID = "UPT-LAB-KOM";
 const char* WIFI_PASS = "uptlab12";
-// Variabel status WiFi untuk dikirim ke dashboard (via MQTT)
-bool wifiConnectedFlag = false;
-String wifiIp = "";
 
-// =====================
-// Konfigurasi MQTT (TLS)
-// =====================
-// Menggunakan EMQX Cloud (port 8883 / TLS).
-// - topic_pub : dipakai ESP32 untuk mengirim JSON data sensor ke dashboard (index.html).
+// ===== MQTT (TLS) =====
 const char* mqtt_server = "n01d3130.ala.asia-southeast1.emqxsl.com";
 const int   mqtt_port   = 8883;
 const char* mqtt_user   = "pertanian";
 const char* mqtt_pass   = "pertanian12";
 const char* topic_pub   = "pertanian/sensor";
+const char* topic_sub   = "pertanian/control";
 
 WiFiClientSecure tlsClient;
 PubSubClient mqttClient(tlsClient);
 
-// ==================
-// Konfigurasi Supabase
-// ==================
-// Menggunakan REST endpoint Supabase untuk insert baris baru ke tabel 'pertanian'.
-// Kolom yang diisi: temperature, humidity, soil, ph, fuzzy_air, fuzzy_ph, relay_air, relay_dolomit.
+// ===== SUPABASE =====
 #define supabaseUrl "https://sptomqebtvclfebaktof.supabase.co"
 #define supabaseKey "sb_publishable_jqEF4hY0nK0Bu0BkKK2ayQ_eW_8fh_u"
 #define tableName   "pertanian"
 
-// Interval kirim data periodik
-// - MQTT_PUB_INTERVAL_MS   : berapa sering data dipublish ke broker MQTT (dashboard real-time).
-// - SUPABASE_INTERVAL_MS   : berapa sering data di-insert ke Supabase (log historis).
+// Interval kirim data
 const unsigned long MQTT_PUB_INTERVAL_MS = 10UL * 1000UL;
 const unsigned long SUPABASE_INTERVAL_MS = 30UL * 1000UL;
 unsigned long lastMqttPubMs = 0;
 unsigned long lastSupabaseMs = 0;
 
-// ===========================
-// Konfigurasi Sensor Soil Moisture
-// ===========================
-// Sensor soil moisture kapasitif analog:
-// - SOIL_PIN  : input ADC ESP32 (range 0–4095).
-// - DRY_VALUE : nilai ADC tipikal ketika tanah sangat kering (ditentukan dari kalibrasi).
-// - WET_VALUE : nilai ADC tipikal ketika tanah sangat basah (ditentukan dari kalibrasi).
-// Nilai ini kemudian dipetakan ke kelembaban tanah 0–100% secara linear.
+// Mode kontrol relay
+bool manualMode = false;
+bool manualWaterOn = false;
+bool manualDolomitOn = false;
+
+// Konfigurasi soil moisture
 const int SOIL_PIN   = 35;   // Pin ADC ESP32 (misal GPIO34)
 const int DRY_VALUE  = 3000; // Nilai ADC saat tanah sangat kering (kalibrasi)
 const int WET_VALUE  = 1000; // Nilai ADC saat tanah sangat basah (kalibrasi)
 
-// LED indikator (biasanya LED built-in di GPIO2):
-// - Dipakai sebagai indikator tanah kering dan status pembacaan pH.
+// Opsional: LED indikator (misalnya LED built-in atau LED eksternal di GPIO2)
 const int LED_PIN    = 2;
 const int DRY_THRESHOLD_PERCENT = 40; // Di bawah 40% dianggap kering
 
-// ============
 // Relay output
-// ============
-// Mengendalikan dua relay:
-// - RELAY_WATER_PIN   : pompa air
-// - RELAY_DOLOMIT_PIN : aplikasi dolomit
-// Asumsi modul relay aktif-LOW (umum di pasaran): LOW = menyala, HIGH = mati.
-// Jika modul yang digunakan aktif-HIGH, atur RELAY_ACTIVE_LOW = false.
+// Catatan: kebanyakan modul relay aktif-LOW (LOW = ON). Ubah jika modul Anda aktif-HIGH.
 const bool RELAY_ACTIVE_LOW = true;
 const int RELAY_WATER_PIN   = 26; // relay pompa air
 const int RELAY_DOLOMIT_PIN = 27; // relay dolomit
 
-// =============================
-// Konfigurasi Sensor pH Tanah
-// =============================
-// Sensor pH tanah membutuhkan driver/modul DMS:
-// - DMSpin    : output untuk mengaktifkan modul pengondisi sinyal (DMS).
-// - PH_ADC_PIN: input ADC yang membaca tegangan keluaran sensor pH.
-// Pembacaan dilakukan secara periodik dengan delay agar DMS sempat stabil (10 detik).
+// Konfigurasi sensor pH tanah (berdasarkan ph.ino)
 const int DMSpin       = 13; // pin output untuk DMS (driver sensor pH)
 const int PH_ADC_PIN   = 34; // pin input sensor pH tanah
 
@@ -125,25 +68,18 @@ int   PH_ADC;          // nilai ADC mentah untuk pH
 float lastReading_pH;  // pH terakhir yang terbaca
 float pH_value;        // nilai pH saat ini
 
-// =========================
-// Fuzzy Tahani 3x3 (Sugeno)
-// =========================
-// Di sini fuzzy digunakan sebagai "mesin rekomendasi" untuk menghidupkan relay berdasarkan
-// kombinasi kelembaban tanah & pH tanah. Model mengikuti konsep Tahani:
-// - Fuzzifikasi: soil% -> {Kering, Lembab, Basah}, pH -> {Asam, Netral, Basa}
-// - Aturan (rule base 3x3): kombinasi 3x3 menghasilkan dua output:
-//     - Water_OUT   : seberapa kuat perlu penyiraman
-//     - Dolomit_OUT : seberapa kuat perlu penambahan dolomit
-// - Inferensi: menggunakan operator MIN (Zadeh) untuk AND.
-// - Defuzzifikasi: memakai model Sugeno singleton (output berupa angka tetap per rule),
-//   kemudian dihitung rata-rata berbobot (weighted average).
-// Nilai akhir (0..1) kemudian dibandingkan dengan ambang 0.5 untuk memutuskan ON/OFF relay.
+// ===== Fuzzy Tahani 3x3 =====
+// Input 1: kelembaban tanah (%)
+//   - Kering, Lembab, Basah
+// Input 2: pH tanah
+//   - Asam, Netral, Basa
+//
+// Output (Sugeno singleton, 0..1) lalu di-threshold jadi ON/OFF relay.
+//   - Water (pompa air)
+//   - Dolomit
 
 static float trimf(float x, float a, float b, float c) {
-  // Fungsi keanggotaan segitiga:
-  // a = batas kiri (μ=0), b = puncak (μ=1), c = batas kanan (μ=0).
-  // Dipakai untuk himpunan "Lembab" karena transisi halus dan perhitungan ringan.
-  // Handle "shoulder" degeneracies safely (a==b atau b==c) agar tetap stabil di ujung.
+  // Handle "shoulder" degeneracies safely (a==b or b==c)
   if ((a == b) && (x == a)) return 1.0f;
   if ((b == c) && (x == c)) return 1.0f;
   if (x <= a || x >= c) return 0.0f;
@@ -153,10 +89,7 @@ static float trimf(float x, float a, float b, float c) {
 }
 
 static float trapmf(float x, float a, float b, float c, float d) {
-  // Fungsi keanggotaan trapesium:
-  // a = mulai naik dari 0, b = mulai plateau 1, c = akhir plateau 1, d = turun ke 0.
-  // Cocok ketika ada rentang nilai yang dianggap optimal penuh (μ=1), misalnya pH netral 6–6.8.
-  // Penanganan kasus a==b atau c==d dilakukan agar nilai ujung bisa tetap 1.0 tanpa NaN.
+  // Handle degeneracies safely (a==b and/or c==d) so endpoints can still be 1.0
   if ((a == b) && (x == a)) return 1.0f;
   if ((c == d) && (x == d)) return 1.0f;
   if (x <= a || x >= d) return 0.0f;
@@ -166,15 +99,6 @@ static float trapmf(float x, float a, float b, float c, float d) {
 }
 
 static float fuzzyTahaniSugeno33(const float muA[3], const float muB[3], const float out33[3][3]) {
-  // Mengimplementasikan inferensi Tahani 3x3 dengan skema Sugeno:
-  // - muA[3] : derajat keanggotaan input 1 (soil) untuk {Kering, Lembab, Basah}
-  // - muB[3] : derajat keanggotaan input 2 (pH)   untuk {Asam, Netral, Basa}
-  // - out33  : matriks output singleton (0..1) untuk setiap kombinasi (i,j)
-  //
-  // Langkah:
-  // 1. Untuk setiap rule (i,j), hitung bobot w_ij = min(μA_i, μB_j)  [operator AND Zadeh].
-  // 2. Akumulasi sumW  = Σ w_ij, sumWZ = Σ (w_ij * z_ij).
-  // 3. Nilai crisp = sumWZ / sumW jika sumW > 0, jika tidak maka 0.
   float sumW = 0.0f;
   float sumWZ = 0.0f;
   for (int i = 0; i < 3; i++) {
@@ -188,11 +112,6 @@ static float fuzzyTahaniSugeno33(const float muA[3], const float muB[3], const f
 }
 
 static void relayWrite(int pin, bool on) {
-  // Abstraksi kecil untuk menghilangkan kebingungan aktif-LOW vs aktif-HIGH.
-  // - Jika RELAY_ACTIVE_LOW = true:
-  //     on  = true  -> tulis LOW (relay menyala)
-  //     on  = false -> tulis HIGH (relay mati)
-  // - Jika RELAY_ACTIVE_LOW = false (modul aktif-HIGH), kebalikannya.
   if (RELAY_ACTIVE_LOW) {
     digitalWrite(pin, on ? LOW : HIGH);
   } else {
@@ -201,26 +120,52 @@ static void relayWrite(int pin, bool on) {
 }
 
 static void ensureWiFi() {
-  if (WiFi.status() == WL_CONNECTED) {
-    wifiConnectedFlag = true;
-    wifiIp = WiFi.localIP().toString();
-    return;
-  }
+  if (WiFi.status() == WL_CONNECTED) return;
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.print("WiFi connecting");
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < 20000UL) {
     delay(500);
+    Serial.print(".");
   }
+  Serial.println();
+
   if (WiFi.status() == WL_CONNECTED) {
-    wifiConnectedFlag = true;
-    wifiIp = WiFi.localIP().toString();
+    Serial.print("WiFi connected. IP: ");
+    Serial.println(WiFi.localIP());
   } else {
-    wifiConnectedFlag = false;
-    wifiIp = "";
+    Serial.println("WiFi connect timeout.");
   }
+}
+
+static void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  (void)topic;
+  // payload -> String sederhana agar tidak perlu library JSON
+  String msg;
+  msg.reserve(length + 1);
+  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+  msg.trim();
+  msg.toUpperCase();
+
+  // Format dukungan (contoh):
+  // "AUTO"
+  // "MANUAL"
+  // "WATER_ON" / "WATER_OFF"
+  // "DOLOMIT_ON" / "DOLOMIT_OFF"
+  if (msg.indexOf("AUTO") >= 0) manualMode = false;
+  if (msg.indexOf("MANUAL") >= 0) manualMode = true;
+
+  if (msg.indexOf("WATER_ON") >= 0) manualWaterOn = true;
+  if (msg.indexOf("WATER_OFF") >= 0) manualWaterOn = false;
+
+  if (msg.indexOf("DOLOMIT_ON") >= 0) manualDolomitOn = true;
+  if (msg.indexOf("DOLOMIT_OFF") >= 0) manualDolomitOn = false;
+
+  Serial.print("MQTT control: ");
+  Serial.println(msg);
 }
 
 static void ensureMqtt() {
@@ -232,11 +177,19 @@ static void ensureMqtt() {
   tlsClient.setInsecure();
 
   mqttClient.setServer(mqtt_server, mqtt_port);
+  mqttClient.setCallback(mqttCallback);
 
   String clientId = "esp32-pertanian-";
   clientId += String((uint32_t)ESP.getEfuseMac(), HEX);
 
-  mqttClient.connect(clientId.c_str(), mqtt_user, mqtt_pass);
+  Serial.print("MQTT connecting...");
+  if (mqttClient.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+    Serial.println("connected.");
+    mqttClient.subscribe(topic_sub);
+  } else {
+    Serial.print("failed, rc=");
+    Serial.println(mqttClient.state());
+  }
 }
 
 static void waitWithMqtt(unsigned long ms) {
@@ -256,11 +209,8 @@ static bool supabaseInsert(
 
   HTTPClient http;
   String url = String(supabaseUrl) + "/rest/v1/" + tableName;
-  // Endpoint Supabase:
-  // - Metode    : POST
-  // - URL       : {supabaseUrl}/rest/v1/{tableName}
-  // - Header    : apikey, Authorization, Content-Type, Prefer
-  // - Body JSON : satu objek mewakili satu baris data sensor.
+  // Gunakan begin(url) standar (seperti banyak contoh ESP32 + HTTPS),
+  // core ESP32 biasanya sudah mengatur WiFiClientSecure dengan setInsecure() di dalam.
   http.begin(url);
   http.addHeader("apikey", supabaseKey);
   http.addHeader("Authorization", String("Bearer ") + supabaseKey);
@@ -268,9 +218,6 @@ static bool supabaseInsert(
   http.addHeader("Prefer", "return=minimal");
 
   // JSON row (pastikan kolom di Supabase table sesuai key di bawah)
-  // Tabel 'pertanian' diasumsikan memiliki kolom:
-  // id (serial), updated_at (timestamp, default now()), temperature, humidity,
-  // soil, ph, fuzzy_air, fuzzy_ph, relay_air, relay_dolomit.
   String body = "{";
   body += "\"temperature\":" + String(temperature, 2) + ",";
   body += "\"humidity\":" + String(humidity, 2) + ",";
@@ -286,6 +233,19 @@ static bool supabaseInsert(
   body += "}";
 
   int code = http.POST(body);
+  Serial.print("Supabase HTTP code: ");
+  Serial.println(code);
+
+  if (code < 0) {
+    // Error dari layer HTTPClient (misal TLS, koneksi, dll)
+    Serial.print("Supabase error: ");
+    Serial.println(http.errorToString(code));
+  } else if (code >= 300) {
+    // Print sedikit isi response untuk debugging (misal pesan error Supabase)
+    String resp = http.getString();
+    Serial.print("Supabase resp: ");
+    Serial.println(resp);
+  }
 
   http.end();
   return (code >= 200 && code < 300);
@@ -318,7 +278,8 @@ void setup() {
   ensureWiFi();
   ensureMqtt();
 
-  Serial.println("Mulai monitoring pertanian IoT...");
+  Serial.println("Mulai baca sensor soil moisture dan DHT11...");
+  Serial.println("Kalibrasi DRY_VALUE & WET_VALUE sesuai hasil pembacaan Anda.");
 }
 
 void loop() {
@@ -383,26 +344,20 @@ void loop() {
   digitalWrite(LED_PIN, LOW);
 
   // ===== Fuzzy Tahani 3x3 untuk relay =====
-  // Membership kelembaban tanah (%) mengikuti contoh pada fuzzy.text:
-  // - Kering   : tinggi pada 0–30%, turun ke 0 di 50%
-  // - Lembab   : segitiga, puncak di 50%, nol di 30% dan 70%
-  // - Basah    : mulai naik sekitar 60%, penuh di 80–100%
+  // Membership kelembaban tanah (%)
   float muMoist[3];
-  muMoist[0] = trapmf((float)moisturePercent, 0.0f, 0.0f, 30.0f, 50.0f);   // Kering
-  muMoist[1] = trimf((float)moisturePercent, 30.0f, 50.0f, 70.0f);         // Lembab
-  muMoist[2] = trapmf((float)moisturePercent, 60.0f, 80.0f, 100.0f, 100.0f); // Basah
+  muMoist[0] = trapmf((float)moisturePercent, 0, 0, 25, 45);      // Kering
+  muMoist[1] = trimf((float)moisturePercent, 30, 55, 80);         // Lembab
+  muMoist[2] = trapmf((float)moisturePercent, 65, 85, 100, 100);  // Basah
 
-  // Membership pH tanah mengikuti penjelasan fuzzy.text:
-  // - Asam   : kuat di bawah ~5, turun hingga 6
-  // - Netral : trapesium dengan plateau pH optimal 6–6.8
-  // - Basa   : naik mulai ~6.8 sampai 9
+  // Membership pH tanah
   float ph = lastReading_pH;
   float muPH[3] = {0, 0, 0};
   bool phValid = (ph >= 3.0f && ph <= 9.0f); // hanya gunakan pH dalam range wajar tanah
   if (phValid) {
-    muPH[0] = trapmf(ph, 3.0f, 3.0f, 5.0f, 6.0f);            // Asam
-    muPH[1] = trapmf(ph, 5.5f, 6.0f, 6.8f, 7.2f);            // Netral (plateau 6–6.8)
-    muPH[2] = trapmf(ph, 6.8f, 8.0f, 9.0f, 9.0f);            // Basa
+    muPH[0] = trapmf(ph, 0.0f, 0.0f, 5.2f, 6.2f);   // Asam
+    muPH[1] = trimf(ph, 5.8f, 6.8f, 7.8f);          // Netral
+    muPH[2] = trapmf(ph, 7.2f, 8.0f, 14.0f, 14.0f); // Basa
   }
 
   // Rule base 3x3 (baris = moisture: Kering/Lembab/Basah, kolom = pH: Asam/Netral/Basa)
@@ -431,9 +386,8 @@ void loop() {
   bool waterOnAuto = phValid && (waterScore >= 0.5f);
   bool dolomitOnAuto = phValid && (dolomitScore >= 0.5f);
 
-  // Keputusan akhir relay: hanya berdasarkan fuzzy (otomatis penuh, tanpa override manual).
-  bool waterOn = waterOnAuto;
-  bool dolomitOn = dolomitOnAuto;
+  bool waterOn = manualMode ? manualWaterOn : waterOnAuto;
+  bool dolomitOn = manualMode ? manualDolomitOn : dolomitOnAuto;
 
   relayWrite(RELAY_WATER_PIN, waterOn);
   relayWrite(RELAY_DOLOMIT_PIN, dolomitOn);
@@ -470,19 +424,21 @@ void loop() {
     doc["fuzzy_ph"] = dolomitScore;
     doc["relay_air"] = waterOn ? 1 : 0;
     doc["relay_dolomit"] = dolomitOn ? 1 : 0;
-    // Status WiFi untuk ditampilkan di dashboard
-    doc["wifi_connected"] = wifiConnectedFlag ? 1 : 0;
-    doc["wifi_ip"] = wifiIp;
+    doc["mode"] = manualMode ? "MANUAL" : "AUTO";
 
     char buffer[256];
     size_t n = serializeJson(doc, buffer, sizeof(buffer));
-    mqttClient.publish(topic_pub, buffer, n);
+    bool ok = mqttClient.publish(topic_pub, buffer, n);
+    Serial.print("MQTT publish: ");
+    Serial.println(ok ? "OK" : "FAIL (buffer/conn)");
   }
 
   // ===== Kirim ke Supabase =====
   if (now - lastSupabaseMs >= SUPABASE_INTERVAL_MS) {
     lastSupabaseMs = now;
-    supabaseInsert(t, h, moisturePercent, phRounded, waterScore, dolomitScore, waterOn, dolomitOn);
+    bool ok = supabaseInsert(t, h, moisturePercent, phRounded, waterScore, dolomitScore, waterOn, dolomitOn);
+    Serial.print("Supabase insert: ");
+    Serial.println(ok ? "OK" : "FAIL");
   }
 
   waitWithMqtt(3UL * 1000UL); // jeda sebelum pembacaan berikutnya (tetap jaga MQTT)

@@ -1,14 +1,25 @@
 /*
  * Sistem Monitoring & Kontrol Pertanian IoT Berbasis ESP32
+ * Dikhususkan untuk budidaya CABAI RAWIT (Capsicum frutescens)
+ *
+ * Parameter optimal cabai rawit:
+ *   - Kelembaban tanah : 50%-70% (tidak terlalu kering maupun basah)
+ *   - pH tanah        : 6-7 (netral optimal)
+ *   - Suhu            : 24-28°C (monitoring via DHT11)
  *
  * Fitur utama:
  * - Membaca:
  *   - Suhu & kelembaban udara (DHT11)
  *   - Kelembaban tanah (soil moisture analog)
  *   - pH tanah (sensor pH dengan driver DMS)
- * - Logika Fuzzy Tahani 3x3:
- *   - Input 1  : kelembaban tanah (Kering, Lembab, Basah)
- *   - Input 2  : pH tanah (Asam, Netral, Basa)
+ * - Logika Fuzzy Tahani:
+ *   - Water (3x3x3):
+ *     Input 1  : suhu udara (Rendah, Sedang, Tinggi)
+ *     Input 2  : kelembaban tanah (Kering, Lembab, Basah) - optimal 50-70%
+ *     Input 3  : pH tanah (Asam, Netral, Basa) - optimal 6-7
+ *   - Dolomit (3x3):
+ *     Input 1  : kelembaban tanah (Kering, Lembab, Basah)
+ *     Input 2  : pH tanah (Asam, Netral, Basa)
  *   - Output   : dua skor fuzzy (waterScore & dolomitScore)
  *   - Keputusan: mengendalikan relay pompa air & relay dolomit (otomatis via MQTT)
  * - Koneksi:
@@ -34,8 +45,9 @@
 // Konfigurasi Sensor DHT11
 // ==========================
 // DHT11 digunakan untuk mendapatkan suhu & kelembaban udara lingkungan sekitar.
-// Hasilnya dipakai untuk monitoring dan dikirim ke MQTT & Supabase,
-// tetapi TIDAK ikut masuk ke logika fuzzy Tahani (fuzzy fokus ke tanah & pH).
+// Suhu optimal cabai rawit: 24-28°C (untuk monitoring; fuzzy fokus ke tanah & pH).
+const float TEMP_OPTIMAL_MIN = 24.0f;
+const float TEMP_OPTIMAL_MAX = 28.0f;
 const int DHTPIN  = 4;       // Pin data DHT11 (ubah sesuai wiring Anda, misal GPIO4)
 const int DHTTYPE = DHT11;
 DHT dht(DHTPIN, DHTTYPE);
@@ -97,7 +109,7 @@ const int WET_VALUE  = 1000; // Nilai ADC saat tanah sangat basah (kalibrasi)
 // LED indikator (biasanya LED built-in di GPIO2):
 // - Dipakai sebagai indikator tanah kering dan status pembacaan pH.
 const int LED_PIN    = 2;
-const int DRY_THRESHOLD_PERCENT = 40; // Di bawah 40% dianggap kering
+const int DRY_THRESHOLD_PERCENT = 50; // Di bawah 50% dianggap kering (optimal cabai rawit 50-70%)
 
 // ============
 // Relay output
@@ -131,12 +143,11 @@ float pH_value;        // nilai pH saat ini
 //
 // Kesesuaian dengan dokumen "Logika Fuzzy dan Metode Fuzzy Tahani" (fuzzy.text):
 //
-// 1. MEMBERSHIP FUNCTION (fuzzy.text: "inti sistem fuzzy", nilai 0–1)
-//    - Kelembaban tanah: Kering (trapesium), Lembab (segitiga), Basah (trapesium).
-//      Contoh dokumen: "kering 0–50%", "lembab 30–70%" → diimplementasi dengan overlap
-//      trapmf(0,0,30,50), trimf(30,50,70), trapmf(60,80,100,100).
-//    - pH tanah: Asam, Netral, Basa (semua trapesium). Dokumen: "pH optimal 6–6,8 netral"
-//      → Netral pakai trapmf dengan plateau 6–6,8.
+// 1. MEMBERSHIP FUNCTION - disesuaikan untuk CABAI RAWIT:
+//    - Kelembaban tanah: optimal 50-70%
+//      Kering: trapmf(0,0,40,50), Lembab: trapmf(40,50,70,80), Basah: trapmf(70,80,100,100)
+//    - pH tanah: optimal 6-7
+//      Asam: trapmf(3,3,5,6), Netral: trapmf(5.5,6,7,7.5), Basa: trapmf(7,7.5,9,9)
 //    - Jenis kurva: dokumen menyebut "kurva segitiga atau trapesium lebih efisien" untuk IoT ✅
 //
 // 2. FUZZIFIKASI (fuzzy.text: "nilai tegas → derajat keanggotaan")
@@ -199,6 +210,27 @@ static float fuzzyTahaniSugeno33(const float muA[3], const float muB[3], const f
       float w = (muA[i] < muB[j]) ? muA[i] : muB[j]; // AND = min (Tahani)
       sumW += w;
       sumWZ += w * out33[i][j];
+    }
+  }
+  return (sumW > 0.0f) ? (sumWZ / sumW) : 0.0f;
+}
+
+static float fuzzyTahaniSugeno333(
+  const float muA[3], const float muB[3], const float muC[3],
+  const float out333[3][3][3]
+) {
+  // Inferensi Tahani untuk 3 input (3x3x3), total 27 rule:
+  // w_ijk = min(muA[i], muB[j], muC[k]), crisp = Σ(w_ijk*z_ijk)/Σ(w_ijk)
+  float sumW = 0.0f;
+  float sumWZ = 0.0f;
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      for (int k = 0; k < 3; k++) {
+        float wAB = (muA[i] < muB[j]) ? muA[i] : muB[j];
+        float w = (wAB < muC[k]) ? wAB : muC[k]; // AND = min untuk 3 input
+        sumW += w;
+        sumWZ += w * out333[i][j][k];
+      }
     }
   }
   return (sumW > 0.0f) ? (sumWZ / sumW) : 0.0f;
@@ -399,49 +431,77 @@ void loop() {
   digitalWrite(DMSpin, HIGH);
   digitalWrite(LED_PIN, LOW);
 
-  // ===== Fuzzy Tahani 3x3 untuk relay =====
-  // Membership kelembaban tanah (%) mengikuti contoh pada fuzzy.text:
-  // - Kering   : tinggi pada 0–30%, turun ke 0 di 50%
-  // - Lembab   : segitiga, puncak di 50%, nol di 30% dan 70%
-  // - Basah    : mulai naik sekitar 60%, penuh di 80–100%
-  float muMoist[3];
-  muMoist[0] = trapmf((float)moisturePercent, 0.0f, 0.0f, 30.0f, 50.0f);   // Kering
-  muMoist[1] = trimf((float)moisturePercent, 30.0f, 50.0f, 70.0f);         // Lembab
-  muMoist[2] = trapmf((float)moisturePercent, 60.0f, 80.0f, 100.0f, 100.0f); // Basah
+  // ===== Fuzzy Tahani untuk relay (disesuaikan cabai rawit) =====
+  // Water memakai 3 input: suhu udara + kelembaban tanah + pH tanah (3x3x3).
+  // Dolomit tetap memakai 2 input: kelembaban tanah + pH tanah (3x3).
+  float muTemp[3] = {0, 0, 0};
+  // Membership suhu udara:
+  // - Rendah : shoulder kiri (maks sampai 24, turun habis di 27)
+  // - Sedang : segitiga (24, 27, 31)
+  // - Tinggi : shoulder kanan (mulai 27, penuh dari 31)
+  muTemp[0] = trapmf(t, 0.0f, 0.0f, 24.0f, 27.0f);      // Rendah
+  muTemp[1] = trimf(t, 24.0f, 27.0f, 31.0f);            // Sedang
+  muTemp[2] = trapmf(t, 27.0f, 31.0f, 45.0f, 45.0f);    // Tinggi
 
-  // Membership pH tanah mengikuti penjelasan fuzzy.text:
-  // - Asam   : kuat di bawah ~5, turun hingga 6
-  // - Netral : trapesium dengan plateau pH optimal 6–6.8
-  // - Basa   : naik mulai ~6.8 sampai 9
+  // Membership kelembaban tanah (%): optimal cabai rawit 50-70%
+  // - Kering   : tinggi pada 0–40%, turun ke 0 di 50%
+  // - Lembab   : plateau optimal 50–70% (tidak kering maupun basah)
+  // - Basah    : mulai naik di 70%, penuh di 80–100%
+  float muMoist[3];
+  muMoist[0] = trapmf((float)moisturePercent, 0.0f, 0.0f, 40.0f, 50.0f);   // Kering (<50%)
+  muMoist[1] = trapmf((float)moisturePercent, 40.0f, 50.0f, 70.0f, 80.0f); // Lembab (50-70% optimal)
+  muMoist[2] = trapmf((float)moisturePercent, 70.0f, 80.0f, 100.0f, 100.0f); // Basah (>70%)
+
+  // Membership pH tanah: optimal cabai rawit 6-7
+  // - Asam   : kuat di bawah 5.5, turun hingga 6
+  // - Netral : plateau optimal 6–7
+  // - Basa   : naik mulai 7 sampai 9
   float ph = lastReading_pH;
   float muPH[3] = {0, 0, 0};
   bool phValid = (ph >= 3.0f && ph <= 9.0f); // hanya gunakan pH dalam range wajar tanah
   if (phValid) {
-    muPH[0] = trapmf(ph, 3.0f, 3.0f, 5.0f, 6.0f);            // Asam
-    muPH[1] = trapmf(ph, 5.5f, 6.0f, 6.8f, 7.2f);            // Netral (plateau 6–6.8)
-    muPH[2] = trapmf(ph, 6.8f, 8.0f, 9.0f, 9.0f);            // Basa
+    muPH[0] = trapmf(ph, 3.0f, 3.0f, 5.0f, 6.0f);            // Asam (<6)
+    muPH[1] = trapmf(ph, 5.5f, 6.0f, 7.0f, 7.5f);            // Netral (6-7 optimal)
+    muPH[2] = trapmf(ph, 7.0f, 7.5f, 9.0f, 9.0f);            // Basa (>7)
   }
 
-  // Rule base 3x3 (baris = moisture: Kering/Lembab/Basah, kolom = pH: Asam/Netral/Basa)
-  // Output singleton 0..1
-  // Water: dominan dipicu tanah kering.
-  const float WATER_OUT[3][3] = {
-    {1.0f, 1.0f, 1.0f},  // Kering
-    {0.4f, 0.2f, 0.3f},  // Lembab
-    {0.0f, 0.0f, 0.0f}   // Basah
+  // Rule base WATER 3x3x3 (temp x moisture x pH)
+  // Prinsip:
+  // - Suhu makin tinggi -> dorong skor siram naik.
+  // - Kelembaban tanah tetap faktor dominan: kondisi Basah tetap menahan siram.
+  const float WATER_OUT[3][3][3] = {
+    // Temp Rendah
+    {
+      {0.8f, 0.8f, 0.8f}, // Moist Kering
+      {0.2f, 0.1f, 0.1f}, // Moist Lembab
+      {0.0f, 0.0f, 0.0f}  // Moist Basah
+    },
+    // Temp Sedang
+    {
+      {1.0f, 1.0f, 1.0f}, // Moist Kering
+      {0.3f, 0.2f, 0.2f}, // Moist Lembab
+      {0.0f, 0.0f, 0.0f}  // Moist Basah
+    },
+    // Temp Tinggi
+    {
+      {1.0f, 1.0f, 1.0f}, // Moist Kering
+      {0.5f, 0.4f, 0.4f}, // Moist Lembab
+      {0.1f, 0.1f, 0.1f}  // Moist Basah (tetap rendah, hanya kompensasi panas)
+    }
   };
 
-  // Dolomit: dominan dipicu pH asam, dikurangi jika tanah terlalu basah.
+  // Rule base DOLOMIT 3x3 (moisture x pH):
+  // tambahkan saat pH asam (<6); tidak perlu saat netral (6-7) atau basa (>7)
   const float DOLOMIT_OUT[3][3] = {
-    {0.6f, 0.0f, 0.0f},  // Kering
-    {1.0f, 0.1f, 0.0f},  // Lembab
-    {0.3f, 0.0f, 0.0f}   // Basah
+    {0.7f, 0.0f, 0.0f},  // Kering + Asam
+    {1.0f, 0.0f, 0.0f},  // Lembab + Asam (optimal aplikasi)
+    {0.4f, 0.0f, 0.0f}   // Basah + Asam (kurangi dosis)
   };
 
   float waterScore = 0.0f;
   float dolomitScore = 0.0f;
   if (phValid) {
-    waterScore = fuzzyTahaniSugeno33(muMoist, muPH, WATER_OUT);
+    waterScore = fuzzyTahaniSugeno333(muTemp, muMoist, muPH, WATER_OUT);
     dolomitScore = fuzzyTahaniSugeno33(muMoist, muPH, DOLOMIT_OUT);
   }
 
@@ -490,6 +550,8 @@ void loop() {
     // Status WiFi untuk ditampilkan di dashboard
     doc["wifi_connected"] = wifiConnectedFlag ? 1 : 0;
     doc["wifi_ip"] = wifiIp;
+    // Suhu optimal cabai rawit 24-28°C
+    doc["temp_optimal"] = (t >= TEMP_OPTIMAL_MIN && t <= TEMP_OPTIMAL_MAX) ? 1 : 0;
 
     char buffer[256];
     size_t n = serializeJson(doc, buffer, sizeof(buffer));

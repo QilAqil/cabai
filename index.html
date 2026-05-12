@@ -6,6 +6,8 @@
   - Subscribe topic "pertanian/sensor" yang dikirim ESP32.
   - Menampilkan data sensor (suhu, kelembaban udara, kelembaban tanah, pH tanah),
     hasil fuzzy (fuzzy_air, fuzzy_ph), status relay, dan status WiFi ESP32.
+  - Memuat riwayat log dari Supabase (REST) — sama dengan data yang di-insert ESP32.
+    Pastikan RLS mengizinkan SELECT untuk kunci anon / publishable yang dipakai di sini.
 -->
 <html>
 <head>
@@ -169,6 +171,61 @@ body{
   text-align:right;
   color:var(--text-muted);
 }
+/* Riwayat Supabase */
+.history-card{
+  margin-top:16px;
+}
+.history-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap;
+  margin-bottom:10px;
+}
+.btn-refresh{
+  font-size:0.75rem;
+  padding:6px 12px;
+  border-radius:8px;
+  border:1px solid rgba(0,0,0,0.12);
+  background:#fff;
+  color:var(--text-main);
+  cursor:pointer;
+}
+.btn-refresh:hover{
+  background:rgba(156,213,255,0.35);
+}
+.table-wrap{
+  overflow-x:auto;
+  border-radius:10px;
+  border:1px solid rgba(0,0,0,0.06);
+}
+.history-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:0.72rem;
+}
+.history-table th,
+.history-table td{
+  padding:8px 10px;
+  text-align:left;
+  border-bottom:1px solid rgba(0,0,0,0.06);
+  white-space:nowrap;
+}
+.history-table th{
+  color:var(--text-muted);
+  font-weight:600;
+  background:rgba(0,0,0,0.02);
+}
+.history-table tbody tr:hover{
+  background:rgba(156,213,255,0.12);
+}
+.history-empty{
+  padding:12px;
+  font-size:0.8rem;
+  color:var(--text-muted);
+  text-align:center;
+}
 /* Penyesuaian tampilan untuk layar kecil (mobile) */
 @media (max-width:600px){
   .title{
@@ -185,7 +242,7 @@ body{
 <div class="wrapper">
   <div class="header">
     <div class="title">Monitoring Pertanian IoT</div>
-    <div class="subtitle">Realtime dari ESP32 &amp; MQTT EMQX</div>
+    <div class="subtitle">Realtime MQTT EMQX &amp; riwayat log Supabase</div>
   </div>
 
   <div class="grid">
@@ -254,6 +311,36 @@ body{
     </div>
   </div>
 
+  <div class="card history-card">
+    <div class="history-head">
+      <div class="card-title" style="margin:0">Riwayat database (Supabase)</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span id="supabaseStatus" class="pill err">Belum dimuat</span>
+        <button type="button" class="btn-refresh" id="supabaseRefresh">Muat ulang</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="history-table">
+        <thead>
+          <tr>
+            <th>Waktu</th>
+            <th>T (°C)</th>
+            <th>RH (%)</th>
+            <th>Tanah (%)</th>
+            <th>pH</th>
+            <th>Fz.Air</th>
+            <th>Fz.pH</th>
+            <th>R.Air</th>
+            <th>R.Dol</th>
+          </tr>
+        </thead>
+        <tbody id="supabaseRows">
+          <tr><td colspan="9" class="history-empty">Memuat…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="footer-status">
     <!-- Status WiFi & MQTT ditampilkan di bagian bawah dashboard -->
     WiFi: <span id="wifiStatus" class="pill err">Unknown</span>
@@ -263,6 +350,12 @@ body{
 </div>
 
 <script>
+// Supabase (selaras dengan index.ino — kunci publishable; RLS harus mengizinkan SELECT)
+const SUPABASE_URL = "https://sptomqebtvclfebaktof.supabase.co";
+const SUPABASE_KEY = "sb_publishable_jqEF4hY0nK0Bu0BkKK2ayQ_eW_8fh_u";
+const SUPABASE_TABLE = "pertanian";
+const SUPABASE_LIMIT = 25;
+
 // Alamat WebSocket MQTT EMQX (port 8084 untuk wss)
 const host = "wss://n01d3130.ala.asia-southeast1.emqxsl.com:8084/mqtt";
 // Topic yang dipublish ESP32 untuk data sensor
@@ -350,6 +443,109 @@ setInterval(function () {
     document.getElementById("wifiIp").innerText = "-";
   }
 }, 5000);
+
+function formatSupabaseTime(row) {
+  const raw = row.updated_at || row.created_at || row.inserted_at || "";
+  if (!raw) return "-";
+  const d = new Date(raw);
+  return isNaN(d.getTime()) ? String(raw) : d.toLocaleString();
+}
+
+function relayCell(v) {
+  if (v === true || v === 1 || v === "1") return "ON";
+  if (v === false || v === 0 || v === "0") return "OFF";
+  return v != null ? String(v) : "-";
+}
+
+async function fetchSupabaseHistory() {
+  const tbody = document.getElementById("supabaseRows");
+  const pill = document.getElementById("supabaseStatus");
+  pill.innerText = "Memuat…";
+  pill.classList.remove("ok", "err");
+  pill.classList.add("err");
+
+  const url =
+    SUPABASE_URL +
+    "/rest/v1/" +
+    SUPABASE_TABLE +
+    "?select=*" +
+    "&order=id.desc" +
+    "&limit=" +
+    SUPABASE_LIMIT;
+
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: "Bearer " + SUPABASE_KEY,
+        Accept: "application/json"
+      }
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(res.status + " " + errText.slice(0, 120));
+    }
+
+    const rows = await res.json();
+    pill.innerText = "Terhubung (" + rows.length + " baris)";
+    pill.classList.remove("err");
+    pill.classList.add("ok");
+
+    if (!rows.length) {
+      tbody.innerHTML =
+        '<tr><td colspan="9" class="history-empty">Belum ada data di tabel.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = rows
+      .map(function (r) {
+        return (
+          "<tr>" +
+          "<td>" +
+          formatSupabaseTime(r) +
+          "</td>" +
+          "<td>" +
+          (r.temperature != null ? Number(r.temperature).toFixed(1) : "-") +
+          "</td>" +
+          "<td>" +
+          (r.humidity != null ? Number(r.humidity).toFixed(0) : "-") +
+          "</td>" +
+          "<td>" +
+          (r.soil != null ? r.soil : "-") +
+          "</td>" +
+          "<td>" +
+          (r.ph != null ? Number(r.ph).toFixed(1) : "-") +
+          "</td>" +
+          "<td>" +
+          (r.fuzzy_air != null ? Number(r.fuzzy_air).toFixed(2) : "-") +
+          "</td>" +
+          "<td>" +
+          (r.fuzzy_ph != null ? Number(r.fuzzy_ph).toFixed(2) : "-") +
+          "</td>" +
+          "<td>" +
+          relayCell(r.relay_air) +
+          "</td>" +
+          "<td>" +
+          relayCell(r.relay_dolomit) +
+          "</td>" +
+          "</tr>"
+        );
+      })
+      .join("");
+  } catch (e) {
+    pill.innerText = "Gagal: " + (e.message || String(e));
+    pill.classList.remove("ok");
+    pill.classList.add("err");
+    tbody.innerHTML =
+      '<tr><td colspan="9" class="history-empty">Periksa RLS Supabase (izin baca <code>anon</code> untuk SELECT) atau koneksi jaringan.</td></tr>';
+  }
+}
+
+document.getElementById("supabaseRefresh").addEventListener("click", fetchSupabaseHistory);
+fetchSupabaseHistory();
+setInterval(fetchSupabaseHistory, 60000);
 </script>
 
 </body>

@@ -12,16 +12,11 @@
  *   - Suhu & kelembaban udara (DHT11)
  *   - Kelembaban tanah (soil moisture analog)
  *   - pH tanah (sensor pH dengan driver DMS)
- * - Logika Fuzzy Tahani:
- *   - Water (3x3x3):
- *     Input 1  : suhu udara (Rendah, Sedang, Tinggi)
- *     Input 2  : kelembaban tanah (Kering, Lembab, Basah) - optimal 50-70%
- *     Input 3  : pH tanah (Asam, Netral, Basa) - optimal 6-7
- *   - Dolomit (3x3):
- *     Input 1  : kelembaban tanah (Kering, Lembab, Basah)
- *     Input 2  : pH tanah (Asam, Netral, Basa)
- *   - Output   : dua skor fuzzy (waterScore & dolomitScore)
- *   - Keputusan: mengendalikan relay pompa air & relay dolomit (otomatis via MQTT)
+ * - Tiga jalur sensor → tiga relay (masing-masing dengan fuzzy Sugeno ringan):
+ *   - Suhu udara (DHT11) → skor fuzzy paranet → relay paranet (ON jika skor ≥ ambang).
+ *   - Kelembaban tanah → skor fuzzy kebutuhan air → relay penyiraman air.
+ *   - pH tanah → skor fuzzy koreksi pH → relay larutan / koreksi pH.
+ * - Skor 0–1: fuzzy_suhu (suhu/paranet), fuzzy_soil (tanah/air), fuzzy_ph — ke MQTT & Supabase.
  * - Koneksi:
  *   - WiFi STA ke SSID laboratorium
  *   - MQTT TLS (EMQX) untuk publish data sensor ke dashboard web
@@ -81,7 +76,7 @@ PubSubClient mqttClient(tlsClient);
 // Konfigurasi Supabase
 // ==================
 // Menggunakan REST endpoint Supabase untuk insert baris baru ke tabel 'pertanian'.
-// Kolom yang diisi: temperature, humidity, soil, ph, fuzzy_air, fuzzy_ph, relay_air, relay_dolomit.
+// Kolom POST: fuzzy_suhu, fuzzy_soil, fuzzy_ph — lihat supabase/migration_*.sql & schema_pertanian.sql
 #define supabaseUrl "https://sptomqebtvclfebaktof.supabase.co"
 #define supabaseKey "sb_publishable_jqEF4hY0nK0Bu0BkKK2ayQ_eW_8fh_u"
 #define tableName   "pertanian"
@@ -109,19 +104,24 @@ const int WET_VALUE  = 1000; // Nilai ADC saat tanah sangat basah (kalibrasi)
 // LED indikator (biasanya LED built-in di GPIO2):
 // - Dipakai sebagai indikator tanah kering dan status pembacaan pH.
 const int LED_PIN    = 2;
-const int DRY_THRESHOLD_PERCENT = 50; // Di bawah 50% dianggap kering (optimal cabai rawit 50-70%)
+const int DRY_THRESHOLD_PERCENT = 50; // referensi kering (optimal cabai rawit 50-70%); fuzzy tanah tetap pakai kurva penuh
 
 // ============
 // Relay output
 // ============
-// Mengendalikan dua relay:
-// - RELAY_WATER_PIN   : pompa air
-// - RELAY_DOLOMIT_PIN : aplikasi dolomit
+// Tiga relay terpisah (satu sensor utama → satu aktuator):
+// - RELAY_PARANET_PIN : paranet / naungan (dari suhu udara)
+// - RELAY_WATER_PIN   : penyiraman air (dari kelembaban tanah)
+// - RELAY_PH_PIN      : penyiraman / dosis larutan penyesuai pH tanah (dari pH)
 // Asumsi modul relay aktif-LOW (umum di pasaran): LOW = menyala, HIGH = mati.
 // Jika modul yang digunakan aktif-HIGH, atur RELAY_ACTIVE_LOW = false.
 const bool RELAY_ACTIVE_LOW = true;
+const int RELAY_PARANET_PIN = 25; // relay paranet (sesuaikan pin wiring)
 const int RELAY_WATER_PIN   = 26; // relay pompa air
-const int RELAY_DOLOMIT_PIN = 27; // relay dolomit
+const int RELAY_PH_PIN      = 27; // relay koreksi pH (bekas jalur dolomit)
+
+// Ambang defuzzifikasi Sugeno → ON/OFF relay (0–1)
+const float RELAY_FUZZY_THRESHOLD = 0.5f;
 
 // =============================
 // Konfigurasi Sensor pH Tanah
@@ -137,41 +137,8 @@ int   PH_ADC;          // nilai ADC mentah untuk pH
 float lastReading_pH;  // pH terakhir yang terbaca
 float pH_value;        // nilai pH saat ini
 
-// =========================
-// Fuzzy Tahani 3x3 (Sugeno)
-// =========================
-//
-// Kesesuaian dengan dokumen "Logika Fuzzy dan Metode Fuzzy Tahani" (fuzzy.text):
-//
-// 1. MEMBERSHIP FUNCTION - disesuaikan untuk CABAI RAWIT:
-//    - Kelembaban tanah: optimal 50-70%
-//      Kering: trapmf(0,0,40,50), Lembab: trapmf(40,50,70,80), Basah: trapmf(70,80,100,100)
-//    - pH tanah: optimal 6-7
-//      Asam: trapmf(3,3,5,6), Netral: trapmf(5.5,6,7,7.5), Basa: trapmf(7,7.5,9,9)
-//    - Jenis kurva: dokumen menyebut "kurva segitiga atau trapesium lebih efisien" untuk IoT ✅
-//
-// 2. FUZZIFIKASI (fuzzy.text: "nilai tegas → derajat keanggotaan")
-//    - Input: soil% dan pH. Output: muMoist[3], muPH[3] (derajat untuk tiap himpunan). ✅
-//
-// 3. FIRE STRENGTH / OPERATOR ZADEH (fuzzy.text: "Interseksi AND = min(μA, μB)")
-//    - Bobot tiap rule: w_ij = min(μA_i, μB_j). Di kode: min(muA[i], muB[j]). ✅
-//
-// 4. REKOMENDASI KEPUTUSAN (fuzzy.text: "fire strength 0–1, alternatif nilai tertinggi")
-//    - Di sini dua keluaran (penyiraman & dolomit). Agregasi pakai model Sugeno singleton:
-//      crisp = Σ(w_ij * z_ij) / Σ(w_ij). Nilai crisp 0..1 lalu di-ambang 0.5 → ON/OFF relay.
-//    - "Alternatif nilai tertinggi" diwujudkan sebagai: skor > 0.5 = rekomendasi jalankan. ✅
-//
-// 5. RINGKASAN ALUR
-//    - Fuzzifikasi: soil% & pH → muMoist[3], muPH[3].
-//    - Inferensi: AND = min (Tahani/Zadeh); setiap rule (i,j) punya singleton z_ij.
-//    - Defuzzifikasi: weighted average (Sugeno).
-//    - Keputusan: waterOn = (waterScore >= 0.5), dolomitOn = (dolomitScore >= 0.5).
-
+// ----- Fungsi keanggotaan (selaras grafik.py / literatur) -----
 static float trimf(float x, float a, float b, float c) {
-  // Fungsi keanggotaan segitiga:
-  // a = batas kiri (μ=0), b = puncak (μ=1), c = batas kanan (μ=0).
-  // Dipakai untuk himpunan "Lembab" karena transisi halus dan perhitungan ringan.
-  // Handle "shoulder" degeneracies safely (a==b atau b==c) agar tetap stabil di ujung.
   if ((a == b) && (x == a)) return 1.0f;
   if ((b == c) && (x == c)) return 1.0f;
   if (x <= a || x >= c) return 0.0f;
@@ -181,10 +148,6 @@ static float trimf(float x, float a, float b, float c) {
 }
 
 static float trapmf(float x, float a, float b, float c, float d) {
-  // Fungsi keanggotaan trapesium:
-  // a = mulai naik dari 0, b = mulai plateau 1, c = akhir plateau 1, d = turun ke 0.
-  // Cocok ketika ada rentang nilai yang dianggap optimal penuh (μ=1), misalnya pH netral 6–6.8.
-  // Penanganan kasus a==b atau c==d dilakukan agar nilai ujung bisa tetap 1.0 tanpa NaN.
   if ((a == b) && (x == a)) return 1.0f;
   if ((c == d) && (x == d)) return 1.0f;
   if (x <= a || x >= d) return 0.0f;
@@ -193,47 +156,37 @@ static float trapmf(float x, float a, float b, float c, float d) {
   return (d - x) / (d - c);
 }
 
-static float fuzzyTahaniSugeno33(const float muA[3], const float muB[3], const float out33[3][3]) {
-  // Mengimplementasikan inferensi Tahani 3x3 dengan skema Sugeno:
-  // - muA[3] : derajat keanggotaan input 1 (soil) untuk {Kering, Lembab, Basah}
-  // - muB[3] : derajat keanggotaan input 2 (pH)   untuk {Asam, Netral, Basa}
-  // - out33  : matriks output singleton (0..1) untuk setiap kombinasi (i,j)
-  //
-  // Langkah:
-  // 1. Untuk setiap rule (i,j), hitung bobot w_ij = min(μA_i, μB_j)  [operator AND Zadeh].
-  // 2. Akumulasi sumW  = Σ w_ij, sumWZ = Σ (w_ij * z_ij).
-  // 3. Nilai crisp = sumWZ / sumW jika sumW > 0, jika tidak maka 0.
-  float sumW = 0.0f;
-  float sumWZ = 0.0f;
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++) {
-      float w = (muA[i] < muB[j]) ? muA[i] : muB[j]; // AND = min (Tahani)
-      sumW += w;
-      sumWZ += w * out33[i][j];
-    }
-  }
-  return (sumW > 0.0f) ? (sumWZ / sumW) : 0.0f;
+/** Suhu udara: Rendah / Sedang / Tinggi → skor kebutuhan paranet 0–1 (Sugeno singleton). */
+static float fuzzyParanetFromTemp(float tempC, bool tempValid) {
+  if (!tempValid) return 0.0f;
+  float muR = trapmf(tempC, 0.0f, 0.0f, 24.0f, 27.0f);
+  float muS = trimf(tempC, 24.0f, 27.0f, 31.0f);
+  float muT = trapmf(tempC, 27.0f, 31.0f, 45.0f, 45.0f);
+  const float zR = 0.0f, zS = 0.25f, zT = 1.0f;
+  float w = muR + muS + muT;
+  return (w > 1e-6f) ? (muR * zR + muS * zS + muT * zT) / w : 0.0f;
 }
 
-static float fuzzyTahaniSugeno333(
-  const float muA[3], const float muB[3], const float muC[3],
-  const float out333[3][3][3]
-) {
-  // Inferensi Tahani untuk 3 input (3x3x3), total 27 rule:
-  // w_ijk = min(muA[i], muB[j], muC[k]), crisp = Σ(w_ijk*z_ijk)/Σ(w_ijk)
-  float sumW = 0.0f;
-  float sumWZ = 0.0f;
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++) {
-      for (int k = 0; k < 3; k++) {
-        float wAB = (muA[i] < muB[j]) ? muA[i] : muB[j];
-        float w = (wAB < muC[k]) ? wAB : muC[k]; // AND = min untuk 3 input
-        sumW += w;
-        sumWZ += w * out333[i][j][k];
-      }
-    }
-  }
-  return (sumW > 0.0f) ? (sumWZ / sumW) : 0.0f;
+/** Kelembaban tanah: Kering / Lembab / Basah → skor penyiraman 0–1. */
+static float fuzzyWaterFromSoil(int moisturePercent) {
+  float x = (float)moisturePercent;
+  float muK = trapmf(x, 0.0f, 0.0f, 40.0f, 50.0f);
+  float muL = trapmf(x, 40.0f, 50.0f, 70.0f, 80.0f);
+  float muB = trapmf(x, 70.0f, 80.0f, 100.0f, 100.0f);
+  const float zK = 1.0f, zL = 0.15f, zB = 0.0f;
+  float w = muK + muL + muB;
+  return (w > 1e-6f) ? (muK * zK + muL * zL + muB * zB) / w : 0.0f;
+}
+
+/** pH: Asam / Netral / Basa → skor koreksi pH 0–1 (asam butuh koreksi). */
+static float fuzzyPhCorrectionFromPh(float ph, bool phValid) {
+  if (!phValid) return 0.0f;
+  float muA = trapmf(ph, 3.0f, 3.0f, 5.0f, 6.0f);
+  float muN = trapmf(ph, 5.5f, 6.0f, 7.0f, 7.5f);
+  float muB = trapmf(ph, 7.0f, 7.5f, 9.0f, 9.0f);
+  const float zA = 1.0f, zN = 0.0f, zB = 0.0f;
+  float w = muA + muN + muB;
+  return (w > 1e-6f) ? (muA * zA + muN * zN + muB * zB) / w : 0.0f;
 }
 
 static void relayWrite(int pin, bool on) {
@@ -298,8 +251,8 @@ static void waitWithMqtt(unsigned long ms) {
 
 static bool supabaseInsert(
   float temperature, float humidity, int soil,
-  float ph, float fuzzy_air, float fuzzy_ph,
-  bool relay_air, bool relay_dolomit
+  float ph, float fuzzy_paranet, float fuzzy_soil, float fuzzy_ph,
+  bool relay_paranet, bool relay_air, bool relay_ph
 ) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
@@ -316,22 +269,18 @@ static bool supabaseInsert(
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Prefer", "return=minimal");
 
-  // JSON row (pastikan kolom di Supabase table sesuai key di bawah)
-  // Tabel 'pertanian' diasumsikan memiliki kolom:
-  // id (serial), updated_at (timestamp, default now()), temperature, humidity,
-  // soil, ph, fuzzy_air, fuzzy_ph, relay_air, relay_dolomit.
+  // Supabase: fuzzy_suhu = skor fuzzy suhu (paranet), fuzzy_soil = tanah (air), fuzzy_ph = pH.
   String body = "{";
   body += "\"temperature\":" + String(temperature, 2) + ",";
   body += "\"humidity\":" + String(humidity, 2) + ",";
   body += "\"soil\":" + String(soil) + ",";
-  // pH dibulatkan 1 angka di belakang koma
   body += "\"ph\":" + String(ph, 1) + ",";
-  body += "\"fuzzy_air\":" + String(fuzzy_air, 2) + ",";
+  body += "\"fuzzy_suhu\":" + String(fuzzy_paranet, 2) + ",";
+  body += "\"fuzzy_soil\":" + String(fuzzy_soil, 2) + ",";
   body += "\"fuzzy_ph\":" + String(fuzzy_ph, 2) + ",";
-  // Supabase error 22P02: kolom bertipe real tidak bisa terima boolean.
-  // Kirim sebagai 0/1 numerik agar kompatibel dengan tipe real/int.
+  body += "\"relay_paranet\":" + String(relay_paranet ? 1 : 0) + ",";
   body += "\"relay_air\":" + String(relay_air ? 1 : 0) + ",";
-  body += "\"relay_dolomit\":" + String(relay_dolomit ? 1 : 0);
+  body += "\"relay_dolomit\":" + String(relay_ph ? 1 : 0);
   body += "}";
 
   int code = http.POST(body);
@@ -356,11 +305,13 @@ void setup() {
   pinMode(DMSpin, OUTPUT);
   digitalWrite(DMSpin, HIGH); // non-aktifkan DMS di awal
 
-  // Relay
+  // Relay: paranet, air, koreksi pH
+  pinMode(RELAY_PARANET_PIN, OUTPUT);
   pinMode(RELAY_WATER_PIN, OUTPUT);
-  pinMode(RELAY_DOLOMIT_PIN, OUTPUT);
+  pinMode(RELAY_PH_PIN, OUTPUT);
+  relayWrite(RELAY_PARANET_PIN, false);
   relayWrite(RELAY_WATER_PIN, false);
-  relayWrite(RELAY_DOLOMIT_PIN, false);
+  relayWrite(RELAY_PH_PIN, false);
 
   dht.begin();
 
@@ -383,12 +334,12 @@ void loop() {
   int moisturePercent = map(sensorValue, DRY_VALUE, WET_VALUE, 0, 100);
   moisturePercent = constrain(moisturePercent, 0, 100);
 
-  // Baca DHT11
+  // Baca DHT11 (simpan validitas sebelum nilai diganti 0 saat error)
   float h = dht.readHumidity();
   float t = dht.readTemperature(); // default Celcius
+  bool dhtOk = !(isnan(h) || isnan(t));
 
-  // Jika DHT gagal, jangan spam banyak teks; cukup satu baris singkat.
-  if (isnan(h) || isnan(t)) {
+  if (!dhtOk) {
     Serial.println("DHT error");
     h = 0;
     t = 0;
@@ -431,89 +382,21 @@ void loop() {
   digitalWrite(DMSpin, HIGH);
   digitalWrite(LED_PIN, LOW);
 
-  // ===== Fuzzy Tahani untuk relay (disesuaikan cabai rawit) =====
-  // Water memakai 3 input: suhu udara + kelembaban tanah + pH tanah (3x3x3).
-  // Dolomit tetap memakai 2 input: kelembaban tanah + pH tanah (3x3).
-  float muTemp[3] = {0, 0, 0};
-  // Membership suhu udara:
-  // - Rendah : shoulder kiri (maks sampai 24, turun habis di 27)
-  // - Sedang : segitiga (24, 27, 31)
-  // - Tinggi : shoulder kanan (mulai 27, penuh dari 31)
-  muTemp[0] = trapmf(t, 0.0f, 0.0f, 24.0f, 27.0f);      // Rendah
-  muTemp[1] = trimf(t, 24.0f, 27.0f, 31.0f);            // Sedang
-  muTemp[2] = trapmf(t, 27.0f, 31.0f, 45.0f, 45.0f);    // Tinggi
-
-  // Membership kelembaban tanah (%): optimal cabai rawit 50-70%
-  // - Kering   : tinggi pada 0–40%, turun ke 0 di 50%
-  // - Lembab   : plateau optimal 50–70% (tidak kering maupun basah)
-  // - Basah    : mulai naik di 70%, penuh di 80–100%
-  float muMoist[3];
-  muMoist[0] = trapmf((float)moisturePercent, 0.0f, 0.0f, 40.0f, 50.0f);   // Kering (<50%)
-  muMoist[1] = trapmf((float)moisturePercent, 40.0f, 50.0f, 70.0f, 80.0f); // Lembab (50-70% optimal)
-  muMoist[2] = trapmf((float)moisturePercent, 70.0f, 80.0f, 100.0f, 100.0f); // Basah (>70%)
-
-  // Membership pH tanah: optimal cabai rawit 6-7
-  // - Asam   : kuat di bawah 5.5, turun hingga 6
-  // - Netral : plateau optimal 6–7
-  // - Basa   : naik mulai 7 sampai 9
+  // ===== Keputusan relay: satu sensor utama → satu aktuator (atur tegas) =====
   float ph = lastReading_pH;
-  float muPH[3] = {0, 0, 0};
-  bool phValid = (ph >= 3.0f && ph <= 9.0f); // hanya gunakan pH dalam range wajar tanah
-  if (phValid) {
-    muPH[0] = trapmf(ph, 3.0f, 3.0f, 5.0f, 6.0f);            // Asam (<6)
-    muPH[1] = trapmf(ph, 5.5f, 6.0f, 7.0f, 7.5f);            // Netral (6-7 optimal)
-    muPH[2] = trapmf(ph, 7.0f, 7.5f, 9.0f, 9.0f);            // Basa (>7)
-  }
+  bool phValid = (ph >= 3.0f && ph <= 9.0f);
 
-  // Rule base WATER 3x3x3 (temp x moisture x pH)
-  // Prinsip:
-  // - Suhu makin tinggi -> dorong skor siram naik.
-  // - Kelembaban tanah tetap faktor dominan: kondisi Basah tetap menahan siram.
-  const float WATER_OUT[3][3][3] = {
-    // Temp Rendah
-    {
-      {0.8f, 0.8f, 0.8f}, // Moist Kering
-      {0.2f, 0.1f, 0.1f}, // Moist Lembab
-      {0.0f, 0.0f, 0.0f}  // Moist Basah
-    },
-    // Temp Sedang
-    {
-      {1.0f, 1.0f, 1.0f}, // Moist Kering
-      {0.3f, 0.2f, 0.2f}, // Moist Lembab
-      {0.0f, 0.0f, 0.0f}  // Moist Basah
-    },
-    // Temp Tinggi
-    {
-      {1.0f, 1.0f, 1.0f}, // Moist Kering
-      {0.5f, 0.4f, 0.4f}, // Moist Lembab
-      {0.1f, 0.1f, 0.1f}  // Moist Basah (tetap rendah, hanya kompensasi panas)
-    }
-  };
+  float scoreParanet = fuzzyParanetFromTemp(t, dhtOk);
+  float scoreSoil = fuzzyWaterFromSoil(moisturePercent);
+  float scorePh = fuzzyPhCorrectionFromPh(ph, phValid);
 
-  // Rule base DOLOMIT 3x3 (moisture x pH):
-  // tambahkan saat pH asam (<6); tidak perlu saat netral (6-7) atau basa (>7)
-  const float DOLOMIT_OUT[3][3] = {
-    {0.7f, 0.0f, 0.0f},  // Kering + Asam
-    {1.0f, 0.0f, 0.0f},  // Lembab + Asam (optimal aplikasi)
-    {0.4f, 0.0f, 0.0f}   // Basah + Asam (kurangi dosis)
-  };
+  bool paranetOn = dhtOk && (scoreParanet >= RELAY_FUZZY_THRESHOLD);
+  bool waterOn = (scoreSoil >= RELAY_FUZZY_THRESHOLD);
+  bool phRelayOn = phValid && (scorePh >= RELAY_FUZZY_THRESHOLD);
 
-  float waterScore = 0.0f;
-  float dolomitScore = 0.0f;
-  if (phValid) {
-    waterScore = fuzzyTahaniSugeno333(muTemp, muMoist, muPH, WATER_OUT);
-    dolomitScore = fuzzyTahaniSugeno33(muMoist, muPH, DOLOMIT_OUT);
-  }
-
-  bool waterOnAuto = phValid && (waterScore >= 0.5f);
-  bool dolomitOnAuto = phValid && (dolomitScore >= 0.5f);
-
-  // Keputusan akhir relay: hanya berdasarkan fuzzy (otomatis penuh, tanpa override manual).
-  bool waterOn = waterOnAuto;
-  bool dolomitOn = dolomitOnAuto;
-
+  relayWrite(RELAY_PARANET_PIN, paranetOn);
   relayWrite(RELAY_WATER_PIN, waterOn);
-  relayWrite(RELAY_DOLOMIT_PIN, dolomitOn);
+  relayWrite(RELAY_PH_PIN, phRelayOn);
 
   // ===== Ringkasan singkat ke Serial Monitor (1 baris per loop) =====
   float phRounded = roundf(lastReading_pH * 10.0f) / 10.0f;
@@ -525,10 +408,12 @@ void loop() {
   Serial.print(moisturePercent);
   Serial.print("% pH=");
   Serial.print(phRounded, 1);
+  Serial.print(" P=");
+  Serial.print(paranetOn ? 1 : 0);
   Serial.print(" W=");
   Serial.print(waterOn ? 1 : 0);
-  Serial.print(" D=");
-  Serial.print(dolomitOn ? 1 : 0);
+  Serial.print(" H=");
+  Serial.print(phRelayOn ? 1 : 0);
   Serial.println();
 
   // ===== Publish MQTT =====
@@ -536,24 +421,24 @@ void loop() {
   if (mqttClient.connected() && (now - lastMqttPubMs >= MQTT_PUB_INTERVAL_MS)) {
     lastMqttPubMs = now;
 
-    // JSON payload (sesuai fuzzy.ino: ArduinoJson + char buffer)
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<384> doc;
     doc["temperature"] = t;
     doc["humidity"] = h;
     doc["soil"] = moisturePercent;
-    // Kirim pH dengan 1 angka di belakang koma
     doc["ph"] = phRounded;
-    doc["fuzzy_air"] = waterScore;
-    doc["fuzzy_ph"] = dolomitScore;
+    // Skor 0–1 untuk dashboard (paranet / air / koreksi pH)
+    doc["fuzzy_suhu"] = scoreParanet;
+    doc["fuzzy_soil"] = scoreSoil;
+    doc["fuzzy_ph"] = scorePh;
+    doc["relay_paranet"] = paranetOn ? 1 : 0;
     doc["relay_air"] = waterOn ? 1 : 0;
-    doc["relay_dolomit"] = dolomitOn ? 1 : 0;
-    // Status WiFi untuk ditampilkan di dashboard
+    doc["relay_ph"] = phRelayOn ? 1 : 0;
+    doc["relay_dolomit"] = phRelayOn ? 1 : 0; // kompatibel nama lama = relay koreksi pH
     doc["wifi_connected"] = wifiConnectedFlag ? 1 : 0;
     doc["wifi_ip"] = wifiIp;
-    // Suhu optimal cabai rawit 24-28°C
     doc["temp_optimal"] = (t >= TEMP_OPTIMAL_MIN && t <= TEMP_OPTIMAL_MAX) ? 1 : 0;
 
-    char buffer[256];
+    char buffer[384];
     size_t n = serializeJson(doc, buffer, sizeof(buffer));
     mqttClient.publish(topic_pub, buffer, n);
   }
@@ -561,7 +446,8 @@ void loop() {
   // ===== Kirim ke Supabase =====
   if (now - lastSupabaseMs >= SUPABASE_INTERVAL_MS) {
     lastSupabaseMs = now;
-    supabaseInsert(t, h, moisturePercent, phRounded, waterScore, dolomitScore, waterOn, dolomitOn);
+    supabaseInsert(t, h, moisturePercent, phRounded, scoreParanet, scoreSoil, scorePh,
+                   paranetOn, waterOn, phRelayOn);
   }
 
   waitWithMqtt(3UL * 1000UL); // jeda sebelum pembacaan berikutnya (tetap jaga MQTT)

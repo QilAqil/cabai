@@ -4,8 +4,7 @@
   Halaman ini:
   - Terkoneksi ke broker MQTT EMQX via WebSocket (wss).
   - Subscribe topic "pertanian/sensor" yang dikirim ESP32.
-  - Menampilkan data sensor (suhu, kelembaban udara, kelembaban tanah, pH tanah),
-    hasil fuzzy (fuzzy_air, fuzzy_ph), status relay, dan status WiFi ESP32.
+  - Menampilkan data sensor, skor fuzzy_suhu / fuzzy_soil / fuzzy_ph, tiga relay (paranet, air, koreksi pH).
   - Memuat riwayat log dari Supabase (REST) — sama dengan data yang di-insert ESP32.
     Pastikan RLS mengizinkan SELECT untuk kunci anon / publishable yang dipakai di sini.
 -->
@@ -135,15 +134,18 @@ body{
   color:var(--text-muted);
   margin-left:4px;
 }
-/* Container untuk dua badge relay (Air & Dolomit) */
+/* Tiga relay dalam satu baris */
 .relay-row{
   display:flex;
   justify-content:space-between;
+  gap:6px;
   margin-top:8px;
+  flex-wrap:wrap;
 }
 .relay-badge{
   flex:1;
-  margin:0 4px;
+  min-width:88px;
+  margin:0;
   padding:8px 10px;
   border-radius:10px;
   font-size:0.8rem;
@@ -284,28 +286,38 @@ body{
 
     <div class="card">
       <div class="card-header">
-        <div class="card-title">Fuzzy Decision</div>
+        <div class="card-title">Kontrol &amp; skor</div>
       </div>
       <div class="metric-row">
-        <div class="metric-label">Fuzzy Air</div>
+        <div class="metric-label">Skor fuzzy suhu (paranet)</div>
         <div class="metric-value">
-          <span id="fuzzy_air">-</span>
+          <span id="fuzzy_suhu">-</span>
         </div>
       </div>
       <div class="metric-row">
-        <div class="metric-label">Fuzzy pH</div>
+        <div class="metric-label">Skor siram (tanah)</div>
+        <div class="metric-value">
+          <span id="fuzzy_soil">-</span>
+        </div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-label">Skor koreksi pH</div>
         <div class="metric-value">
           <span id="fuzzy_ph">-</span>
         </div>
       </div>
       <div class="relay-row">
         <div class="relay-badge">
-          <span class="relay-label">Relay Air</span>
+          <span class="relay-label">Paranet</span>
+          <span id="relay_paranet" class="relay-status off">OFF</span>
+        </div>
+        <div class="relay-badge">
+          <span class="relay-label">Air</span>
           <span id="relay_air" class="relay-status off">OFF</span>
         </div>
         <div class="relay-badge">
-          <span class="relay-label">Relay Dolomit</span>
-          <span id="relay_dolomit" class="relay-status off">OFF</span>
+          <span class="relay-label">pH</span>
+          <span id="relay_ph" class="relay-status off">OFF</span>
         </div>
       </div>
     </div>
@@ -328,14 +340,16 @@ body{
             <th>RH (%)</th>
             <th>Tanah (%)</th>
             <th>pH</th>
-            <th>Fz.Air</th>
+            <th>Fz.Suhu</th>
+            <th>Fz.Tnh</th>
             <th>Fz.pH</th>
+            <th>R.Par</th>
             <th>R.Air</th>
-            <th>R.Dol</th>
+            <th>R.pH</th>
           </tr>
         </thead>
         <tbody id="supabaseRows">
-          <tr><td colspan="9" class="history-empty">Memuat…</td></tr>
+          <tr><td colspan="11" class="history-empty">Memuat…</td></tr>
         </tbody>
       </table>
     </div>
@@ -371,6 +385,10 @@ const options = {
 // Menyimpan waktu pesan sensor terakhir diterima (dipakai untuk mendeteksi ESP32 offline)
 let lastSensorMessageTs = 0;
 
+function relayOn(v) {
+  return (v === true) || (v === 1) || (v === "1") || (v === "true");
+}
+
 // Membuat koneksi MQTT client
 const client = mqtt.connect(host, options);
 
@@ -398,16 +416,27 @@ client.on("message", function (topic, message) {
   document.getElementById("ph").innerText =
     phVal === null || phVal === "-" ? "-" : Number(phVal).toFixed(1);
 
-  // Update nilai fuzzy (skor rekomendasi)
-  document.getElementById("fuzzy_air").innerText = data.fuzzy_air ?? "-";
-  document.getElementById("fuzzy_ph").innerText = data.fuzzy_ph ?? "-";
+  const fzSuhu = data.fuzzy_suhu != null ? data.fuzzy_suhu : data.fuzzy_air;
+  document.getElementById("fuzzy_suhu").innerText =
+    fzSuhu != null ? Number(fzSuhu).toFixed(2) : "-";
+  document.getElementById("fuzzy_soil").innerText =
+    data.fuzzy_soil != null ? Number(data.fuzzy_soil).toFixed(2) : "-";
+  document.getElementById("fuzzy_ph").innerText =
+    data.fuzzy_ph != null ? Number(data.fuzzy_ph).toFixed(2) : "-";
 
-  // Status relay dikirim sebagai 0/1 atau boolean; normalisasi jadi true/false
-  const relayAir = (data.relay_air === true) || (data.relay_air === 1) || (data.relay_air === "1") || (data.relay_air === "true");
-  const relayDol = (data.relay_dolomit === true) || (data.relay_dolomit === 1) || (data.relay_dolomit === "1") || (data.relay_dolomit === "true");
+  const relayParanet = relayOn(data.relay_paranet);
+  const relayAir = relayOn(data.relay_air);
+  const relayPh = relayOn(data.relay_ph) || relayOn(data.relay_dolomit);
 
+  document.getElementById("relay_paranet").innerText = relayParanet ? "ON" : "OFF";
+  document.getElementById("relay_paranet").className =
+    "relay-status " + (relayParanet ? "on" : "off");
   document.getElementById("relay_air").innerText = relayAir ? "ON" : "OFF";
-  document.getElementById("relay_dolomit").innerText = relayDol ? "ON" : "OFF";
+  document.getElementById("relay_air").className =
+    "relay-status " + (relayAir ? "on" : "off");
+  document.getElementById("relay_ph").innerText = relayPh ? "ON" : "OFF";
+  document.getElementById("relay_ph").className =
+    "relay-status " + (relayPh ? "on" : "off");
 
   // Status WiFi dikirim ESP32 via field wifi_connected dan wifi_ip
   const wifiConnected = (data.wifi_connected === true) || (data.wifi_connected === 1) || (data.wifi_connected === "1") || (data.wifi_connected === "true");
@@ -495,7 +524,7 @@ async function fetchSupabaseHistory() {
 
     if (!rows.length) {
       tbody.innerHTML =
-        '<tr><td colspan="9" class="history-empty">Belum ada data di tabel.</td></tr>';
+        '<tr><td colspan="11" class="history-empty">Belum ada data di tabel.</td></tr>';
       return;
     }
 
@@ -519,10 +548,16 @@ async function fetchSupabaseHistory() {
           (r.ph != null ? Number(r.ph).toFixed(1) : "-") +
           "</td>" +
           "<td>" +
-          (r.fuzzy_air != null ? Number(r.fuzzy_air).toFixed(2) : "-") +
+          (r.fuzzy_suhu != null ? Number(r.fuzzy_suhu).toFixed(2) : (r.fuzzy_air != null ? Number(r.fuzzy_air).toFixed(2) : "-")) +
+          "</td>" +
+          "<td>" +
+          (r.fuzzy_soil != null ? Number(r.fuzzy_soil).toFixed(2) : "-") +
           "</td>" +
           "<td>" +
           (r.fuzzy_ph != null ? Number(r.fuzzy_ph).toFixed(2) : "-") +
+          "</td>" +
+          "<td>" +
+          relayCell(r.relay_paranet) +
           "</td>" +
           "<td>" +
           relayCell(r.relay_air) +
@@ -539,7 +574,7 @@ async function fetchSupabaseHistory() {
     pill.classList.remove("ok");
     pill.classList.add("err");
     tbody.innerHTML =
-      '<tr><td colspan="9" class="history-empty">Periksa RLS Supabase (izin baca <code>anon</code> untuk SELECT) atau koneksi jaringan.</td></tr>';
+      '<tr><td colspan="11" class="history-empty">Periksa RLS Supabase (izin baca <code>anon</code> untuk SELECT) atau koneksi jaringan.</td></tr>';
   }
 }
 

@@ -1,0 +1,72 @@
+## Kesimpulan akhir: `index.ino` dan `index.html`
+
+### Peran `index.ino` (ESP32 — sumber kebenaran kontrol)
+
+Firmware ini menjadi **otak lapangan**: membaca sensor, menghitung **tiga skor fuzzy terpisah** (masing-masing 0–1 dengan fungsi keanggotaan trapesium/segitiga lalu agregasi Sugeno ringan), lalu menggerakkan **tiga relay** sesuai ambang `RELAY_FUZZY_THRESHOLD` (0,5).
+
+```15:19:d:\TA\git ta\index.ino
+ * - Tiga jalur sensor → tiga relay (masing-masing dengan fuzzy Sugeno ringan):
+ *   - Suhu udara (DHT11) → skor fuzzy paranet → relay paranet (ON jika skor ≥ ambang).
+ *   - Kelembaban tanah → skor fuzzy kebutuhan air → relay penyiraman air.
+ *   - pH tanah → skor fuzzy koreksi pH → relay larutan / koreksi pH.
+ * - Skor 0–1: fuzzy_suhu (suhu/paranet), fuzzy_soil (tanah/air), fuzzy_ph — ke MQTT & Supabase.
+```
+
+- **Paranet**: dari suhu (hanya jika DHT valid).  
+- **Air**: dari persen kelembaban tanah.  
+- **pH**: dari pH dalam rentang wajar; relay pH memakai pin `RELAY_PH_PIN`, sementara ke Supabase status itu tetap bisa masuk kolom legacy `relay_dolomit` agar cocok dengan skema tabel lama.
+
+Data dikirim **dua jalur**: **MQTT** (cepat, untuk dashboard live) dan **Supabase REST** (lebih jarang, untuk log). Body Supabase memakai nama kolom **`fuzzy_suhu`**, **`fuzzy_soil`**, **`fuzzy_ph`**, plus **`relay_paranet`**, **`relay_air`**, **`relay_dolomit`** (isi = relay koreksi pH).
+
+```272:283:d:\TA\git ta\index.ino
+  // Supabase: fuzzy_suhu = skor fuzzy suhu (paranet), fuzzy_soil = tanah (air), fuzzy_ph = pH.
+  String body = "{";
+  body += "\"temperature\":" + String(temperature, 2) + ",";
+  body += "\"humidity\":" + String(humidity, 2) + ",";
+  body += "\"soil\":" + String(soil) + ",";
+  body += "\"ph\":" + String(ph, 1) + ",";
+  body += "\"fuzzy_suhu\":" + String(fuzzy_paranet, 2) + ",";
+  body += "\"fuzzy_soil\":" + String(fuzzy_soil, 2) + ",";
+  body += "\"fuzzy_ph\":" + String(fuzzy_ph, 2) + ",";
+  body += "\"relay_paranet\":" + String(relay_paranet ? 1 : 0) + ",";
+  body += "\"relay_air\":" + String(relay_air ? 1 : 0) + ",";
+  body += "\"relay_dolomit\":" + String(relay_ph ? 1 : 0);
+```
+
+---
+
+### Peran `index.html` (dashboard — tampilan & riwayat)
+
+Halaman ini **tidak mengendalikan relay**; ia **mengamati** data yang sama dengan yang dipublish ESP32: koneksi **WebSocket MQTT** ke broker yang sama, subscribe topik **`pertanian/sensor`**, parse JSON, isi kartu sensor, tiga skor fuzzy, tiga status relay, serta indikator WiFi (dari field `wifi_connected` / `wifi_ip` bila ada).
+
+```4:8:d:\TA\git ta\index.html
+  Halaman ini:
+  - Terkoneksi ke broker MQTT EMQX via WebSocket (wss).
+  - Subscribe topic "pertanian/sensor" yang dikirim ESP32.
+  - Menampilkan data sensor, skor fuzzy_suhu / fuzzy_soil / fuzzy_ph, tiga relay (paranet, air, koreksi pH).
+  - Memuat riwayat log dari Supabase (REST) — sama dengan data yang di-insert ESP32.
+```
+
+Di JavaScript, dashboard **mengikuti kontrak nama terbaru** (`fuzzy_suhu`, `relay_ph`, dll.) tetapi tetap punya **fallback** ke payload lama (`fuzzy_air`, `relay_dolomit`) supaya firmware atau baris database lama tidak membuat tampilan kosong.
+
+```419:429:d:\TA\git ta\index.html
+  const fzSuhu = data.fuzzy_suhu != null ? data.fuzzy_suhu : data.fuzzy_air;
+  document.getElementById("fuzzy_suhu").innerText =
+    fzSuhu != null ? Number(fzSuhu).toFixed(2) : "-";
+  document.getElementById("fuzzy_soil").innerText =
+    data.fuzzy_soil != null ? Number(data.fuzzy_soil).toFixed(2) : "-";
+  document.getElementById("fuzzy_ph").innerText =
+    data.fuzzy_ph != null ? Number(data.fuzzy_ph).toFixed(2) : "-";
+
+  const relayParanet = relayOn(data.relay_paranet);
+  const relayAir = relayOn(data.relay_air);
+  const relayPh = relayOn(data.relay_ph) || relayOn(data.relay_dolomit);
+```
+
+Selain MQTT, ada **`fetchSupabaseHistory`**: mengambil baris terakhir dari tabel `pertanian` untuk **tabel riwayat** (kolom fuzzy/relay diselaraskan dengan Supabase, lagi-lagi dengan fallback `fuzzy_air` jika migrasi rename belum dijalankan).
+
+---
+
+### Satu kalimat penutup
+
+**`index.ino`** memutuskan kontrol tiga relay dari tiga skor fuzzy dan mendorong data ke MQTT + Supabase; **`index.html`** hanya **memantau** jalur MQTT yang sama dan **mengingat** pola data di Supabase, dengan kompatibilitas mundur untuk nama field lama — sehingga keduanya membentuk satu sistem: **ESP32 = kontrol + produksi data**, **dashboard = visualisasi real-time + arsip**.

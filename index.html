@@ -4,7 +4,7 @@
   Halaman ini:
   - Terkoneksi ke broker MQTT EMQX via WebSocket (wss).
   - Subscribe topic "pertanian/sensor" yang dikirim ESP32.
-  - Menampilkan data sensor, skor fuzzy_suhu / fuzzy_soil / fuzzy_ph, tiga relay (paranet, air, koreksi pH).
+  - Menampilkan data sensor, skor fuzzy_suhu / fuzzy_soil / fuzzy_ph, servo paranet + dua relay (air, koreksi pH).
   - Memuat riwayat log dari Supabase (REST) — sama dengan data yang di-insert ESP32.
     Pastikan RLS mengizinkan SELECT untuk kunci anon / publishable yang dipakai di sini.
 -->
@@ -308,8 +308,8 @@ body{
       </div>
       <div class="relay-row">
         <div class="relay-badge">
-          <span class="relay-label">Paranet</span>
-          <span id="relay_paranet" class="relay-status off">OFF</span>
+          <span class="relay-label">Servo paranet</span>
+          <span id="paranet_active_badge" class="relay-status off">OFF</span>
         </div>
         <div class="relay-badge">
           <span class="relay-label">Air</span>
@@ -424,13 +424,15 @@ client.on("message", function (topic, message) {
   document.getElementById("fuzzy_ph").innerText =
     data.fuzzy_ph != null ? Number(data.fuzzy_ph).toFixed(2) : "-";
 
-  const relayParanet = relayOn(data.relay_paranet);
+  const paranetOn = relayOn(
+    data.relay_paranet != null ? data.relay_paranet : data.paranet_active
+  );
   const relayAir = relayOn(data.relay_air);
   const relayPh = relayOn(data.relay_ph) || relayOn(data.relay_dolomit);
 
-  document.getElementById("relay_paranet").innerText = relayParanet ? "ON" : "OFF";
-  document.getElementById("relay_paranet").className =
-    "relay-status " + (relayParanet ? "on" : "off");
+  document.getElementById("paranet_active_badge").innerText = paranetOn ? "ON" : "OFF";
+  document.getElementById("paranet_active_badge").className =
+    "relay-status " + (paranetOn ? "on" : "off");
   document.getElementById("relay_air").innerText = relayAir ? "ON" : "OFF";
   document.getElementById("relay_air").className =
     "relay-status " + (relayAir ? "on" : "off");
@@ -557,7 +559,7 @@ async function fetchSupabaseHistory() {
           (r.fuzzy_ph != null ? Number(r.fuzzy_ph).toFixed(2) : "-") +
           "</td>" +
           "<td>" +
-          relayCell(r.relay_paranet) +
+          relayCell(r.relay_paranet != null ? r.relay_paranet : r.paranet_active) +
           "</td>" +
           "<td>" +
           relayCell(r.relay_air) +

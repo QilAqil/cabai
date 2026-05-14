@@ -12,8 +12,8 @@
  *   - Suhu & kelembaban udara (DHT11)
  *   - Kelembaban tanah (soil moisture analog)
  *   - pH tanah (sensor pH dengan driver DMS)
- * - Tiga jalur sensor → tiga relay (masing-masing dengan fuzzy Sugeno ringan):
- *   - Suhu udara (DHT11) → skor fuzzy paranet → relay paranet (ON jika skor ≥ ambang).
+ * - Tiga jalur sensor → tiga aktuator (fuzzy Sugeno ringan):
+ *   - Suhu udara (DHT11) → skor fuzzy paranet → servo paranet (sudut ON/OFF sesuai ambang).
  *   - Kelembaban tanah → skor fuzzy kebutuhan air → relay penyiraman air.
  *   - pH tanah → skor fuzzy koreksi pH → relay larutan / koreksi pH.
  * - Skor 0–1: fuzzy_suhu (suhu/paranet), fuzzy_soil (tanah/air), fuzzy_ph — ke MQTT & Supabase.
@@ -30,6 +30,7 @@
  */
 
 #include <DHT.h>
+#include <ESP32Servo.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
@@ -76,7 +77,7 @@ PubSubClient mqttClient(tlsClient);
 // Konfigurasi Supabase
 // ==================
 // Menggunakan REST endpoint Supabase untuk insert baris baru ke tabel 'pertanian'.
-// Kolom POST: fuzzy_suhu, fuzzy_soil, fuzzy_ph — lihat supabase/migration_*.sql & schema_pertanian.sql
+// Kolom POST (nama = kolom Supabase Anda): fuzzy_suhu, fuzzy_soil, fuzzy_ph, relay_paranet, relay_air, relay_dolomit
 #define supabaseUrl "https://sptomqebtvclfebaktof.supabase.co"
 #define supabaseKey "sb_publishable_jqEF4hY0nK0Bu0BkKK2ayQ_eW_8fh_u"
 #define tableName   "pertanian"
@@ -107,18 +108,19 @@ const int LED_PIN    = 2;
 const int DRY_THRESHOLD_PERCENT = 50; // referensi kering (optimal cabai rawit 50-70%); fuzzy tanah tetap pakai kurva penuh
 
 // ============
-// Relay output
+// Aktuator output
 // ============
-// Tiga relay terpisah (satu sensor utama → satu aktuator):
-// - RELAY_PARANET_PIN : paranet / naungan (dari suhu udara)
-// - RELAY_WATER_PIN   : penyiraman air (dari kelembaban tanah)
-// - RELAY_PH_PIN      : penyiraman / dosis larutan penyesuai pH tanah (dari pH)
-// Asumsi modul relay aktif-LOW (umum di pasaran): LOW = menyala, HIGH = mati.
-// Jika modul yang digunakan aktif-HIGH, atur RELAY_ACTIVE_LOW = false.
+// - Paranet: servo (PWM) menggantikan relay — pasang library "ESP32Servo" (Arduino Library Manager).
+// - Air & pH: relay aktif-LOW (LOW = ON). RELAY_ACTIVE_LOW = false jika modul aktif-HIGH.
 const bool RELAY_ACTIVE_LOW = true;
-const int RELAY_PARANET_PIN = 25; // relay paranet (sesuaikan pin wiring)
+const int PARANET_SERVO_PIN = 25; // sinyal PWM servo paranet (sesuaikan wiring)
+// Sudut servo (0–180): kalibrasi mekanik roll paranet — boleh dibalik jika arah terbalik.
+const int PARANET_SERVO_ANGLE_OFF = 0;   // suhu rendah / tidak perlu naungan
+const int PARANET_SERVO_ANGLE_ON  = 90; // suhu tinggi / paranet diturunkan (ubah sesuai mekanik)
 const int RELAY_WATER_PIN   = 26; // relay pompa air
 const int RELAY_PH_PIN      = 27; // relay koreksi pH (bekas jalur dolomit)
+
+Servo paranetServo;
 
 // Ambang defuzzifikasi Sugeno → ON/OFF relay (0–1)
 const float RELAY_FUZZY_THRESHOLD = 0.5f;
@@ -189,6 +191,14 @@ static float fuzzyPhCorrectionFromPh(float ph, bool phValid) {
   return (w > 1e-6f) ? (muA * zA + muN * zN + muB * zB) / w : 0.0f;
 }
 
+/** Atur servo paranet: sudut OFF vs ON (logika fuzzy sama dengan sebelumnya relay). */
+static void paranetServoApply(bool deployed) {
+  int a = deployed ? PARANET_SERVO_ANGLE_ON : PARANET_SERVO_ANGLE_OFF;
+  if (a < 0) a = 0;
+  if (a > 180) a = 180;
+  paranetServo.write(a);
+}
+
 static void relayWrite(int pin, bool on) {
   // Abstraksi kecil untuk menghilangkan kebingungan aktif-LOW vs aktif-HIGH.
   // - Jika RELAY_ACTIVE_LOW = true:
@@ -252,7 +262,7 @@ static void waitWithMqtt(unsigned long ms) {
 static bool supabaseInsert(
   float temperature, float humidity, int soil,
   float ph, float fuzzy_paranet, float fuzzy_soil, float fuzzy_ph,
-  bool relay_paranet, bool relay_air, bool relay_ph
+  bool paranet_on, bool relay_air, bool relay_ph
 ) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
@@ -278,7 +288,8 @@ static bool supabaseInsert(
   body += "\"fuzzy_suhu\":" + String(fuzzy_paranet, 2) + ",";
   body += "\"fuzzy_soil\":" + String(fuzzy_soil, 2) + ",";
   body += "\"fuzzy_ph\":" + String(fuzzy_ph, 2) + ",";
-  body += "\"relay_paranet\":" + String(relay_paranet ? 1 : 0) + ",";
+  // relay_paranet = flag 0/1 servo paranet (nama kolom di DB tetap relay_paranet / float4).
+  body += "\"relay_paranet\":" + String(paranet_on ? 1 : 0) + ",";
   body += "\"relay_air\":" + String(relay_air ? 1 : 0) + ",";
   body += "\"relay_dolomit\":" + String(relay_ph ? 1 : 0);
   body += "}";
@@ -305,11 +316,11 @@ void setup() {
   pinMode(DMSpin, OUTPUT);
   digitalWrite(DMSpin, HIGH); // non-aktifkan DMS di awal
 
-  // Relay: paranet, air, koreksi pH
-  pinMode(RELAY_PARANET_PIN, OUTPUT);
+  // Servo paranet + relay air / pH
+  paranetServo.attach(PARANET_SERVO_PIN);
+  paranetServo.write(PARANET_SERVO_ANGLE_OFF);
   pinMode(RELAY_WATER_PIN, OUTPUT);
   pinMode(RELAY_PH_PIN, OUTPUT);
-  relayWrite(RELAY_PARANET_PIN, false);
   relayWrite(RELAY_WATER_PIN, false);
   relayWrite(RELAY_PH_PIN, false);
 
@@ -382,7 +393,7 @@ void loop() {
   digitalWrite(DMSpin, HIGH);
   digitalWrite(LED_PIN, LOW);
 
-  // ===== Keputusan relay: satu sensor utama → satu aktuator (atur tegas) =====
+  // ===== Keputusan aktuator: suhu → servo paranet; tanah / pH → relay =====
   float ph = lastReading_pH;
   bool phValid = (ph >= 3.0f && ph <= 9.0f);
 
@@ -394,7 +405,7 @@ void loop() {
   bool waterOn = (scoreSoil >= RELAY_FUZZY_THRESHOLD);
   bool phRelayOn = phValid && (scorePh >= RELAY_FUZZY_THRESHOLD);
 
-  relayWrite(RELAY_PARANET_PIN, paranetOn);
+  paranetServoApply(paranetOn);
   relayWrite(RELAY_WATER_PIN, waterOn);
   relayWrite(RELAY_PH_PIN, phRelayOn);
 

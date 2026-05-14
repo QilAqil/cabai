@@ -1,8 +1,7 @@
 -- =============================================================================
--- Skema tabel `pertanian` — referensi lengkap (proyek baru / from scratch).
--- Punya tabel lama (fuzzy_air, tanpa fuzzy_soil)? Jalankan:
---   supabase/migration_sync_pertanian_for_esp32.sql
--- ESP32 mengirim: fuzzy_suhu (suhu→paranet), fuzzy_soil (tanah→air), fuzzy_ph, tiga relay.
+-- Skema tabel `pertanian` — selaras dashboard Supabase (float4 pada sensor/relay).
+-- Migrasi dari tabel lama: supabase/migration_sync_pertanian_for_esp32.sql
+-- ESP32 POST: fuzzy_suhu, fuzzy_soil, fuzzy_ph, relay_paranet (0/1 = servo paranet), relay_air, relay_dolomit
 -- =============================================================================
 
 -- Tabel baru (jika belum ada)
@@ -11,34 +10,35 @@ CREATE TABLE IF NOT EXISTS public.pertanian (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-  -- Sensor
-  temperature     REAL NOT NULL DEFAULT 0,    -- suhu udara (°C), DHT11
-  humidity        REAL NOT NULL DEFAULT 0,    -- kelembaban udara (%), DHT11
-  soil            INTEGER NOT NULL DEFAULT 0, -- kelembaban tanah (0–100%)
-  ph              REAL NOT NULL DEFAULT 0,    -- pH tanah
+  -- Sensor (di UI Supabase sering tampil sebagai float4)
+  temperature     REAL NOT NULL DEFAULT 0,
+  humidity        REAL NOT NULL DEFAULT 0,
+  soil            REAL NOT NULL DEFAULT 0,
+  ph              REAL NOT NULL DEFAULT 0,
 
-  -- Skor indikator 0–1 (dashboard / analisis)
-  fuzzy_suhu      REAL NOT NULL DEFAULT 0,    -- skor fuzzy suhu udara → paranet
-  fuzzy_soil      REAL NOT NULL DEFAULT 0,   -- skor kebutuhan penyiraman (dari kelembaban tanah)
-  fuzzy_ph        REAL NOT NULL DEFAULT 0,   -- skor kebutuhan koreksi pH (dari pH)
+  -- Skor fuzzy 0–1
+  fuzzy_suhu      REAL NOT NULL DEFAULT 0,
+  fuzzy_soil      REAL NOT NULL DEFAULT 0,
+  fuzzy_ph        REAL NOT NULL DEFAULT 0,
 
-  -- Relay: 0 = OFF, 1 = ON (ESP32 mengirim angka)
-  relay_paranet   SMALLINT NOT NULL DEFAULT 0, -- paranet (suhu tinggi)
-  relay_air       SMALLINT NOT NULL DEFAULT 0, -- pompa penyiraman air (tanah kering)
-  relay_dolomit   SMALLINT NOT NULL DEFAULT 0  -- relay koreksi pH / larutan (nama kolom legacy)
+  -- relay_paranet: nama kolom legacy; isi 0/1 = flag servo paranet (bukan relay fisik)
+  relay_paranet   REAL NOT NULL DEFAULT 0,
+  relay_air       REAL NOT NULL DEFAULT 0,
+  relay_dolomit   REAL NOT NULL DEFAULT 0
 );
 
 COMMENT ON TABLE public.pertanian IS 'Log sensor & kontrol IoT pertanian (MQTT + Supabase)';
-COMMENT ON COLUMN public.pertanian.fuzzy_suhu IS 'Skor fuzzy suhu udara (paranet), 0–1';
-COMMENT ON COLUMN public.pertanian.fuzzy_soil IS 'Skor 0–1 kebutuhan air (kelembaban tanah)';
-COMMENT ON COLUMN public.pertanian.fuzzy_ph IS 'Skor 0–1 koreksi pH';
-COMMENT ON COLUMN public.pertanian.relay_dolomit IS 'Status relay koreksi pH (legacy: dolomit)';
+COMMENT ON COLUMN public.pertanian.fuzzy_suhu IS 'Skor fuzzy suhu → servo paranet (0–1)';
+COMMENT ON COLUMN public.pertanian.fuzzy_soil IS 'Skor fuzzy tanah → relay air (0–1)';
+COMMENT ON COLUMN public.pertanian.fuzzy_ph IS 'Skor fuzzy pH → relay koreksi pH (0–1)';
+COMMENT ON COLUMN public.pertanian.relay_paranet IS '0/1 flag servo paranet ON (nama kolom tetap di DB)';
+COMMENT ON COLUMN public.pertanian.relay_dolomit IS '0/1 relay koreksi pH (legacy: dolomit)';
 
 -- =============================================================================
 -- Migrasi dari tabel lama: tambah kolom yang belum ada (aman dijalankan ulang)
 -- =============================================================================
 ALTER TABLE public.pertanian ADD COLUMN IF NOT EXISTS fuzzy_soil REAL NOT NULL DEFAULT 0;
-ALTER TABLE public.pertanian ADD COLUMN IF NOT EXISTS relay_paranet SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE public.pertanian ADD COLUMN IF NOT EXISTS relay_paranet REAL NOT NULL DEFAULT 0;
 
 -- =============================================================================
 -- Index untuk urutkan riwayat terbaru di dashboard
@@ -48,7 +48,6 @@ CREATE INDEX IF NOT EXISTS idx_pertanian_id_desc ON public.pertanian (id DESC);
 
 -- =============================================================================
 -- Row Level Security (sesuaikan kebijakan kampus / produksi)
--- Contoh: anon boleh baca + insert — hati-hati untuk aplikasi publik
 -- =============================================================================
 ALTER TABLE public.pertanian ENABLE ROW LEVEL SECURITY;
 

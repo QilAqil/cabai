@@ -1,17 +1,103 @@
-## Kesimpulan akhir: `index.ino` dan `index.html`
+## Kesimpulan: index.ino + index.html
 
-### Peran `index.ino` (ESP32)
+Firmware: fuzzy Sugeno 3 jalur (suhu→servo paranet, tanah→relay air, pH→relay). DB: relay_paranet = flag servo, relay_air, relay_dolomit.
 
-Firmware menghitung tiga skor fuzzy, menggerakkan **servo paranet** (suhu) dan **relay air / pH** (tanah & pH). Ke **MQTT** dan **Supabase** dipakai nama kolom yang sama dengan database Anda: **`relay_paranet`** (nilai 0/1 = servo ON/OFF), **`relay_air`**, **`relay_dolomit`**, plus **`fuzzy_suhu`**, **`fuzzy_soil`**, **`fuzzy_ph`**.
+## Resistor & wiring (sesuai komponen di foto)
 
-### Peran `index.html` (dashboard)
+### DHT22 AM2302 (modul 3 pin + PCB)
+- VCC → 3,3 V, GND → GND, DATA → GPIO4
+- **Tidak perlu** resistor tambahan (pull-up ~10 kΩ sudah di PCB modul)
 
-Membaca MQTT dan REST; kolom paranet di tabel mengikuti **`relay_paranet`**. Jika suatu saat payload memakai **`paranet_active`**, dashboard tetap bisa membacanya sebagai cadangan.
+### Soil moisture (probe + modul 4 pin)
+- VCC → 3,3 V (disarankan), GND → GND, **AO → GPIO35**, DO tidak dipakai
+- **Tidak perlu** resistor di AO (pembagi sudah di modul + potensiometer)
+- Kalibrasi: putar potensiometer modul, lalu sesuaikan DRY_VALUE / WET_VALUE di index.ino
 
-### Database (Supabase)
+### Sensor pH tanah + DMS
+- DMS → GPIO13; analog pH → GPIO34
+- Ukur tegangan AOUT dengan multimeter saat idle:
+  - Maks ≤ 3,3 V → **tanpa** pembagi
+  - Maks ~5 V → pembagi **10 kΩ** (atas ke sinyal) + **20 kΩ** (bawah ke GND) ke GPIO34
 
-Sesuai skema Anda: tipe **float4** (`REAL` di PostgreSQL) untuk sensor dan relay; kolom paranet servo tetap bernama **`relay_paranet`**. Migrasi ringkas: **`supabase/migration_sync_pertanian_for_esp32.sql`**. Referensi lengkap: **`supabase/schema_pertanian.sql`**.
+### Servo paranet (GPIO25)
+- Sinyal PWM tanpa resistor; **5 V terpisah** + GND bersama ESP32; kapasitor **100–470 µF** di 5 V servo
 
-### Satu kalimat
+### Relay air & pH (GPIO26, 27)
+- Modul relay siap pakai: **tanpa** resistor di pin IN
 
-**ESP32** menulis **`relay_paranet`** sebagai flag servo paranet; **dashboard** menampilkan **Servo paranet** dari field yang sama, tanpa mengubah nama kolom di Supabase.
+### LED GPIO2
+- Built-in board: tanpa resistor; LED eksternal: **220–330 Ω**
+
+### DS18B20 (ada di foto, tidak dipakai di firmware)
+- Suhu udara dari **DHT22**. Jika nanti pakai DS18B20: **4,7 kΩ** pull-up DATA ke 3,3 V
+
+---
+
+## Penjelasan diagram blok (`diagram_blok_sistem.png`)
+
+Diagram dibuat dengan skrip Python `diagram_blok_sistem.py` (library Matplotlib). Gaya mengikuti contoh diagram TA: setiap kotak diberi nomor, panah menunjukkan aliran **daya** (abu-abu) dan **data/sinyal** (hitam/biru).
+
+### Gambaran umum
+
+Sistem ini adalah **greenhouse IoT untuk cabai rawit**. ESP32 membaca tiga parameter lingkungan (suhu & kelembaban udara, kelembaban tanah, pH tanah), memprosesnya dengan **fuzzy Sugeno tiga jalur terpisah**, lalu mengendalikan **servo paranet** dan **dua relay** (air & koreksi pH). Data dikirim ke cloud lewat **WiFi**: publikasi real-time ke **MQTT** dan arsip periodik ke **Supabase**; pengguna memantau lewat **dashboard web** (`index.html`).
+
+Tidak ada LCD lokal atau notifikasi Telegram di firmware saat ini — penggantinya adalah dashboard berbasis browser.
+
+### Blok per nomor
+
+| No | Blok | Fungsi |
+|----|------|--------|
+| **1** | **ESP32** | Unit pemrosesan pusat. Menjalankan firmware `index.ino`: pembacaan ADC/GPIO, perhitungan fuzzy, PWM servo, kontrol relay, koneksi WiFi, MQTT, dan POST ke Supabase. Di dalam blok ini digambarkan logika **Fuzzy Sugeno 3 jalur** (bukan satu mesin fuzzy multi-input). |
+| **2** | **Sensor pH tanah + DMS** | Probe pH tanah dengan modul kondisioner sinyal (DMS). GPIO13 mengaktifkan DMS; GPIO34 (ADC) membaca tegangan analog pH. Pembacaan periodik dengan jeda agar sinyal stabil. |
+| **3** | **DHT22 (AM2302)** | Sensor suhu dan kelembaban udara di dalam greenhouse. Data digital lewat GPIO4. Dipakai untuk monitoring dan jalur fuzzy **suhu → paranet**. |
+| **4** | **Soil moisture** | Modul probe + PCB; pin **AO** ke GPIO35 (ADC). Nilai ADC dipetakan ke kelembaban tanah 0–100% (kalibrasi DRY_VALUE / WET_VALUE). Jalur fuzzy **tanah → relay air**. |
+| **5** | **Level shifter (opsional)** | Jika keluaran analog pH atau sensor lain berlevel 5 V, konverter 5 V→3,3 V melindungi input ESP32. Jika semua keluaran sudah ≤3,3 V (atau pakai pembagi resistor), blok ini bisa diabaikan di rangkaian. |
+| **7** | **Supabase** | Database PostgreSQL di cloud. ESP32 mengirim log lewat **REST HTTPS** (suhu, RH, kelembaban tanah, pH, tiga skor fuzzy, status relay/servo). Dashboard membaca riwayat dengan query SELECT. |
+| **8** | **Adaptor 12 V DC** | Sumber daya utama instalasi (sesuai diagram hardware). |
+| **9** | **DC-DC step down** | Menurunkan 12 V menjadi **5 V** untuk mensuplai sensor yang membutuhkan 5 V. ESP32 biasanya juga mendapat daya dari adaptor/USB (5 V atau regulator onboard). |
+| **10** | **Servo paranet** | Aktuator naungan; sinyal PWM GPIO25. Skor fuzzy suhu dibanding ambang (0,5) → sudut ON/OFF (mis. 0° / 90°). Di database kolom **`relay_paranet`** menyimpan flag 0/1 (bukan sudut). |
+| **11** | **Relay air** | GPIO26 mengendalikan pompa/penyiraman. Skor fuzzy kelembaban tanah → ON jika tanah terlalu kering. |
+| **12** | **Relay pH** | GPIO27 mengendalikan larutan koreksi pH. Skor fuzzy pH → ON jika pH perlu dikoreksi. |
+| **13** | **Broker MQTT (EMQX)** | Publikasi data real-time (topik pertanian) agar dashboard bisa update tanpa refresh penuh. |
+| **14** | **Dashboard web** | Halaman `index.html`: subscribe MQTT untuk tampilan langsung, fetch Supabase untuk grafik/riwayat. |
+
+### Aliran data (panah hitam / biru)
+
+1. **Sensor → ESP32**  
+   DHT22 (digital), soil moisture dan pH (analog via ADC). ESP32 mengumpulkan nilai mentah setiap siklus `loop()`.
+
+2. **ESP32 → Fuzzy Sugeno (internal)**  
+   Tiga fungsi terpisah:
+   - `fuzzy_suhu` dari suhu DHT22 → keputusan servo paranet  
+   - `fuzzy_soil` dari % kelembaban tanah → relay air  
+   - `fuzzy_ph` dari pH → relay koreksi pH  
+   Defuzzifikasi singleton; relay/servo ON jika skor ≥ 0,5.
+
+3. **ESP32 → Aktuator**  
+   Sinyal PWM ke servo; sinyal digital ke modul relay (active-low sesuai konfigurasi firmware).
+
+4. **ESP32 → Cloud (WiFi, biru)**  
+   - **MQTT**: payload JSON berisi sensor + `fuzzy_suhu`, `fuzzy_soil`, `fuzzy_ph`, `relay_paranet`, `relay_air`, `relay_ph` / `relay_dolomit`.  
+   - **HTTPS → Supabase**: insert baris ke tabel `pertanian` dengan kolom yang sama.
+
+5. **Supabase & MQTT → Dashboard**  
+   Browser menampilkan nilai terkini (MQTT) dan kurva/tabel historis (Supabase).
+
+### Aliran daya (panah abu-abu)
+
+- **12 V** dari adaptor ke step-down dan (tergantung wiring) ke ESP32.  
+- **5 V** dari step-down ke sensor yang membutuhkan 5 V.  
+- **3,3 V** dari ESP32 ke DHT22 dan soil moisture (disarankan di firmware).  
+- Servo idealnya **5 V terpisah** dengan GND common ke ESP32.
+
+### Parameter optimal (konteks fuzzy)
+
+Sesuai header `index.ino`: kelembaban tanah 50–70%, pH 6–7, suhu udara 24–28°C. Fuzzy memetakan penyimpangan dari kondisi ideal menjadi skor 0–1 per jalur.
+
+### Cara menghasilkan ulang gambar
+
+```bash
+python diagram_blok_sistem.py
+```
+
+Keluaran: `diagram_blok_sistem.png` di folder proyek yang sama.

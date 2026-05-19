@@ -5,15 +5,15 @@
  * Parameter optimal cabai rawit:
  *   - Kelembaban tanah : 50%-70% (tidak terlalu kering maupun basah)
  *   - pH tanah        : 6-7 (netral optimal)
- *   - Suhu            : 24-28°C (monitoring via DHT11)
+ *   - Suhu            : 24-28°C (monitoring via DHT22)
  *
  * Fitur utama:
  * - Membaca:
- *   - Suhu & kelembaban udara (DHT11)
+ *   - Suhu & kelembaban udara (DHT22 / AM2302)
  *   - Kelembaban tanah (soil moisture analog)
  *   - pH tanah (sensor pH dengan driver DMS)
  * - Tiga jalur sensor → tiga aktuator (fuzzy Sugeno ringan):
- *   - Suhu udara (DHT11) → skor fuzzy paranet → servo paranet (sudut ON/OFF sesuai ambang).
+ *   - Suhu udara (DHT22) → skor fuzzy paranet → servo paranet (sudut ON/OFF sesuai ambang).
  *   - Kelembaban tanah → skor fuzzy kebutuhan air → relay penyiraman air.
  *   - pH tanah → skor fuzzy koreksi pH → relay larutan / koreksi pH.
  * - Skor 0–1: fuzzy_suhu (suhu/paranet), fuzzy_soil (tanah/air), fuzzy_ph — ke MQTT & Supabase.
@@ -38,14 +38,14 @@
 #include <ArduinoJson.h>
 
 // ==========================
-// Konfigurasi Sensor DHT11
+// Konfigurasi Sensor DHT22 (AM2302)
 // ==========================
-// DHT11 digunakan untuk mendapatkan suhu & kelembaban udara lingkungan sekitar.
+// Modul 3 pin (VCC, DATA, GND) dengan PCB — pull-up ~10 kΩ sudah di modul, tanpa resistor ekstra.
 // Suhu optimal cabai rawit: 24-28°C (untuk monitoring; fuzzy fokus ke tanah & pH).
 const float TEMP_OPTIMAL_MIN = 24.0f;
 const float TEMP_OPTIMAL_MAX = 28.0f;
-const int DHTPIN  = 4;       // Pin data DHT11 (ubah sesuai wiring Anda, misal GPIO4)
-const int DHTTYPE = DHT11;
+const int DHTPIN  = 4;       // Pin DATA modul DHT22 (GPIO4)
+const int DHTTYPE = DHT22;
 DHT dht(DHTPIN, DHTTYPE);
 
 // ===========
@@ -91,14 +91,13 @@ unsigned long lastMqttPubMs = 0;
 unsigned long lastSupabaseMs = 0;
 
 // ===========================
-// Konfigurasi Sensor Soil Moisture
-// ===========================
-// Sensor soil moisture kapasitif analog:
-// - SOIL_PIN  : input ADC ESP32 (range 0–4095).
-// - DRY_VALUE : nilai ADC tipikal ketika tanah sangat kering (ditentukan dari kalibrasi).
-// - WET_VALUE : nilai ADC tipikal ketika tanah sangat basah (ditentukan dari kalibrasi).
-// Nilai ini kemudian dipetakan ke kelembaban tanah 0–100% secara linear.
-const int SOIL_PIN   = 35;   // Pin ADC ESP32 (misal GPIO34)
+// Konfigurasi Sensor Soil Moisture (modul probe + PCB)
+// ==========================
+// Modul 4 pin: VCC, GND, DO (digital), AO (analog) — firmware pakai AO saja.
+// Probe resistif + potensiometer di PCB; tanpa resistor ekstra di AO jika keluaran 0–3,3 V.
+// - SOIL_PIN  : AO → ADC ESP32 (GPIO35).
+// - DRY_VALUE / WET_VALUE : kalibrasi dari Serial Monitor (kering vs basah).
+const int SOIL_PIN   = 35;   // AO modul soil moisture → ADC
 const int DRY_VALUE  = 3000; // Nilai ADC saat tanah sangat kering (kalibrasi)
 const int WET_VALUE  = 1000; // Nilai ADC saat tanah sangat basah (kalibrasi)
 
@@ -118,22 +117,21 @@ const int PARANET_SERVO_PIN = 25; // sinyal PWM servo paranet (sesuaikan wiring)
 const int PARANET_SERVO_ANGLE_OFF = 0;   // suhu rendah / tidak perlu naungan
 const int PARANET_SERVO_ANGLE_ON  = 90; // suhu tinggi / paranet diturunkan (ubah sesuai mekanik)
 const int RELAY_WATER_PIN   = 26; // relay pompa air
-const int RELAY_PH_PIN      = 27; // relay koreksi pH (bekas jalur dolomit)
-
+const int RELAY_PH_PIN      = 27; // relay koreksi pH 
 Servo paranetServo;
 
 // Ambang defuzzifikasi Sugeno → ON/OFF relay (0–1)
 const float RELAY_FUZZY_THRESHOLD = 0.5f;
 
 // =============================
-// Konfigurasi Sensor pH Tanah
+// Konfigurasi Sensor pH Tanah (probe + driver DMS)
 // =============================
-// Sensor pH tanah membutuhkan driver/modul DMS:
-// - DMSpin    : output untuk mengaktifkan modul pengondisi sinyal (DMS).
-// - PH_ADC_PIN: input ADC yang membaca tegangan keluaran sensor pH.
-// Pembacaan dilakukan secara periodik dengan delay agar DMS sempat stabil (10 detik).
-const int DMSpin       = 13; // pin output untuk DMS (driver sensor pH)
-const int PH_ADC_PIN   = 34; // pin input sensor pH tanah
+// - DMSpin    : aktifkan modul kondisioner sinyal (GPIO13).
+// - PH_ADC_PIN: keluaran analog pH → ADC (GPIO34, hanya input).
+// Jika keluaran modul pH sampai 5 V: pasang pembagi 10 kΩ (ke sinyal) + 20 kΩ (ke GND) sebelum GPIO34.
+// Jika keluaran sudah 0–3,3 V: tanpa resistor pembagi.
+const int DMSpin       = 13; // kabel biru
+const int PH_ADC_PIN   = 34; // kabel ungu
 
 int   PH_ADC;          // nilai ADC mentah untuk pH
 float lastReading_pH;  // pH terakhir yang terbaca
@@ -345,13 +343,13 @@ void loop() {
   int moisturePercent = map(sensorValue, DRY_VALUE, WET_VALUE, 0, 100);
   moisturePercent = constrain(moisturePercent, 0, 100);
 
-  // Baca DHT11 (simpan validitas sebelum nilai diganti 0 saat error)
+  // Baca DHT22 (min. ~2 s antar pembacaan disarankan; loop sudah jeda panjang karena pH)
   float h = dht.readHumidity();
   float t = dht.readTemperature(); // default Celcius
   bool dhtOk = !(isnan(h) || isnan(t));
 
   if (!dhtOk) {
-    Serial.println("DHT error");
+    Serial.println("DHT22 error");
     h = 0;
     t = 0;
   }

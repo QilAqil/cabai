@@ -8,7 +8,7 @@ Logika fuzzy banyak dipakai dalam sistem pengambilan keputusan. Sistem ini cocok
 
 Metode dalam logika fuzzy terbagi menjadi beberapa pendekatan.
 
-Fuzzy Inference System. Digunakan untuk proses penalaran dan pengambilan keputusan. Metode yang sering dipakai adalah Mamdani, Sugeno, dan Tsukamoto.
+Fuzzy Inference System. Digunakan untuk proses penalaran dan pengambilan keputusan. Pada kontrol greenhouse (index.ino) dipakai Fuzzy Tahani (Mamdani): fuzzifikasi, aturan IF-THEN, MIN–MAX, defuzzifikasi centroid — bukan Sugeno. Metode lain dalam literatur: Sugeno, Tsukamoto.
 
 Fuzzy Clustering. Digunakan untuk mengelompokkan data berdasarkan derajat keanggotaan, contohnya fuzzy c-means.
 

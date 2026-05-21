@@ -1,32 +1,31 @@
 /*
- * Sistem Monitoring & Kontrol Pertanian IoT Berbasis ESP32
- * Dikhususkan untuk budidaya CABAI RAWIT (Capsicum frutescens)
+ * Sistem Monitoring & Kontrol Greenhouse CABAI RAWIT — ESP32
+ * (Capsicum frutescens)
  *
  * Parameter optimal cabai rawit:
- *   - Kelembaban tanah : 50%-70% (tidak terlalu kering maupun basah)
- *   - pH tanah        : 6-7 (netral optimal)
- *   - Suhu            : 24-28°C (monitoring via DHT22)
+ *   - Kelembaban tanah : 50%-70%
+ *   - pH tanah        : 6-7
+ *   - Suhu udara      : 24-28°C (DHT22)
  *
- * Fitur utama:
- * - Membaca:
- *   - Suhu & kelembaban udara (DHT22 / AM2302)
- *   - Kelembaban tanah (soil moisture analog)
- *   - pH tanah (sensor pH dengan driver DMS)
- * - Tiga jalur sensor → tiga aktuator (fuzzy Sugeno ringan):
- *   - Suhu udara (DHT22) → skor fuzzy paranet → servo paranet (sudut ON/OFF sesuai ambang).
- *   - Kelembaban tanah → skor fuzzy kebutuhan air → relay penyiraman air.
- *   - pH tanah → skor fuzzy koreksi pH → relay larutan / koreksi pH.
- * - Skor 0–1: fuzzy_suhu (suhu/paranet), fuzzy_soil (tanah/air), fuzzy_ph — ke MQTT & Supabase.
- * - Koneksi:
- *   - WiFi STA ke SSID laboratorium
- *   - MQTT TLS (EMQX) untuk publish data sensor ke dashboard web
- *   - Supabase REST API untuk menyimpan log data ke database (tabel 'pertanian')
+ * Kontrol: FUZZY TAHANI (Mamdani), 3 jalur terpisah — selaras grafik.py & index.html
+ * -------------------------------------------------------------------------
+ * Tahapan per jalur:
+ *   1. Fuzzifikasi input (μ) — kurva di grafik_fuzzy_input.png
+ *   2. Aturan IF-THEN (lihat komentar tiap fuzzyXxxFrom...)
+ *   3. Implikasi MIN, agregasi MAX
+ *   4. Defuzzifikasi centroid → skor 0–1 (grafik_fuzzy_output.png)
+ *   5. Aktuator ON jika skor >= RELAY_FUZZY_THRESHOLD (0,5)
  *
- * Catatan penting:
- * - Comment di file ini fokus ke penjelasan konsep, arsitektur, dan alasan pemilihan nilai,
- *   bukan sekadar menjelaskan operasi kode yang sudah jelas (misalnya "digitalWrite HIGH/LOW").
- * - Banyak parameter (batas membership fuzzy, ambang pH, mapping soil) bisa dikalibrasi ulang
- *   sesuai data lapangan, namun disini diset berdasarkan literatur & contoh di dokumen fuzzy.
+ * Jalur aktuator:
+ *   - fuzzy_suhu  ← suhu DHT22     → servo paranet GPIO21 (kolom DB relay_paranet = flag 0/1)
+ *   - fuzzy_soil  ← kelembaban %  → relay air GPIO26
+ *   - fuzzy_ph    ← pH tanah       → relay pH GPIO27
+ *
+ * Sensor: DHT22 GPIO4 | soil AO GPIO35 | pH ADC GPIO34, DMS GPIO13
+ * Cloud: MQTT topic pertanian/sensor (~10 s) | Supabase tabel pertanian (~30 s)
+ * Daya: sensor & servo 3,3 V | modul relay 5 V | adaptor 12 V → expansion board
+ *
+ * Dashboard index.html: skor Tahani centroid; hijau jika >= 0,5 (sama ambang firmware).
  */
 
 #include <DHT.h>
@@ -41,7 +40,7 @@
 // Konfigurasi Sensor DHT22 (AM2302)
 // ==========================
 // Modul 3 pin (VCC, DATA, GND) dengan PCB — pull-up ~10 kΩ sudah di modul, tanpa resistor ekstra.
-// Suhu optimal cabai rawit: 24-28°C (untuk monitoring; fuzzy fokus ke tanah & pH).
+// Suhu optimal 24-28°C; jalur fuzzy suhu → servo paranet (grafik.py: Rendah/Sedang/Tinggi °C).
 const float TEMP_OPTIMAL_MIN = 24.0f;
 const float TEMP_OPTIMAL_MAX = 28.0f;
 const int DHTPIN  = 4;       // Pin DATA modul DHT22 (GPIO4)
@@ -77,7 +76,7 @@ PubSubClient mqttClient(tlsClient);
 // Konfigurasi Supabase
 // ==================
 // Menggunakan REST endpoint Supabase untuk insert baris baru ke tabel 'pertanian'.
-// Kolom POST (nama = kolom Supabase Anda): fuzzy_suhu, fuzzy_soil, fuzzy_ph, relay_paranet, relay_air, relay_dolomit
+// Kolom POST: fuzzy_suhu/soil/ph = skor centroid Tahani 0–1; relay_* = status aktuator
 #define supabaseUrl "https://sptomqebtvclfebaktof.supabase.co"
 #define supabaseKey "sb_publishable_jqEF4hY0nK0Bu0BkKK2ayQ_eW_8fh_u"
 #define tableName   "pertanian"
@@ -107,10 +106,10 @@ const int LED_PIN    = 2;
 const int DRY_THRESHOLD_PERCENT = 50; // referensi kering (optimal cabai rawit 50-70%); fuzzy tanah tetap pakai kurva penuh
 
 // ============
-// Aktuator output
+// Aktuator (hasil Fuzzy Tahani, ambang RELAY_FUZZY_THRESHOLD)
 // ============
-// - Paranet: servo (PWM) menggantikan relay — pasang library "ESP32Servo" (Arduino Library Manager).
-// - Air & pH: relay aktif-LOW (LOW = ON). RELAY_ACTIVE_LOW = false jika modul aktif-HIGH.
+// - Paranet: servo PWM GPIO21, VCC 3,3 V — library "ESP32Servo".
+// - Air & pH: relay VCC 5 V, aktif-LOW (LOW = ON). Set RELAY_ACTIVE_LOW = false jika modul aktif-HIGH.
 const bool RELAY_ACTIVE_LOW = true;
 const int PARANET_SERVO_PIN = 21; // sinyal PWM servo paranet (sesuaikan wiring)
 // Sudut servo (0–180): kalibrasi mekanik roll paranet — boleh dibalik jika arah terbalik.
@@ -120,7 +119,7 @@ const int RELAY_WATER_PIN   = 26; // relay pompa air
 const int RELAY_PH_PIN      = 27; // relay koreksi pH 
 Servo paranetServo;
 
-// Ambang defuzzifikasi Sugeno → ON/OFF relay (0–1)
+// Ambang defuzzifikasi Tahani (centroid 0–1) → ON/OFF aktuator
 const float RELAY_FUZZY_THRESHOLD = 0.5f;
 
 // =============================
@@ -138,22 +137,22 @@ float lastReading_pH;  // pH terakhir yang terbaca
 float pH_value;        // nilai pH saat ini
 
 // =============================================================================
-// LOGIKA FUZZY (3 jalur terpisah — selaras grafik.py)
+// LOGIKA FUZZY TAHANI (Mamdani, 3 jalur — selaras grafik.py)
 // =============================================================================
-// Pola fuzzifikasi mirip contoh fuzzyLow / fuzzyMedium / fuzzyHigh:
-//   setiap input dibagi 3 kategori linguistik, μ(x) dihitung dengan kurva linear.
+// Tahapan: fuzzifikasi → aturan IF-THEN → implikasi MIN → agregasi MAX → centroid.
+// Fuzzifikasi: μ(x) seperti fuzzyLow / fuzzyMedium / fuzzyHigh (grafik.py).
+// Konsekuen linguistik pada domain keluaran [0,1]: Rendah / Sedang / Tinggi (intensitas).
+// Skor keluaran = titik berat (centroid) himpunan agregat; aktuator ON jika skor >= 0,5.
 //
-// Perbedaan dengan contoh fuzzyStatus (ambil μ terbesar → "Rendah"/"Sedang"/"Tinggi"):
-//   di sini dipakai FUZZY SUGENO — konsekuen numerik z, lalu skor 0–1:
-//     skor = (μ1*z1 + μ2*z2 + μ3*z3) / (μ1 + μ2 + μ3)
-//   Aktuator ON jika skor >= RELAY_FUZZY_THRESHOLD (0,5).
-//
-// Jalur 1: suhu DHT22     → fuzzy_suhu  → servo paranet (GPIO21)
-// Jalur 2: kelembaban %   → fuzzy_soil  → relay air (GPIO26)
-// Jalur 3: pH tanah       → fuzzy_ph    → relay pH (GPIO27)
+// Jalur 1: suhu → fuzzy_suhu  → servo paranet (GPIO21)
+// Jalur 2: tanah → fuzzy_soil → relay air (GPIO26)
+// Jalur 3: pH → fuzzy_ph → relay pH (GPIO27)
 // =============================================================================
 
-// trimf: fungsi keanggotaan SEGITIGA (a = kiri, b = puncak μ=1, c = kanan).
+static float fminfz(float a, float b) { return (a < b) ? a : b; }
+static float fmaxfz(float a, float b) { return (a > b) ? a : b; }
+
+// trimf / trapmf: fungsi keanggotaan input & output (fuzzifikasi Tahani)
 static float trimf(float x, float a, float b, float c) {
   if ((a == b) && (x == a)) return 1.0f;
   if ((b == c) && (x == c)) return 1.0f;
@@ -163,7 +162,6 @@ static float trimf(float x, float a, float b, float c) {
   return (c - x) / (c - b);
 }
 
-// trapmf: fungsi keanggotaan TRAPESIUM / bahu (plató μ=1 antara b dan c).
 static float trapmf(float x, float a, float b, float c, float d) {
   if ((a == b) && (x == a)) return 1.0f;
   if ((c == d) && (x == d)) return 1.0f;
@@ -173,97 +171,68 @@ static float trapmf(float x, float a, float b, float c, float d) {
   return (d - x) / (d - c);
 }
 
+enum OutKind { OUT_RENDAH = 0, OUT_SEDANG = 1, OUT_TINGGI = 2 };
+
+static float outMuByKind(float y, int kind) {
+  if (kind == OUT_RENDAH) return trapmf(y, 0.0f, 0.0f, 0.15f, 0.45f);
+  if (kind == OUT_SEDANG) return trimf(y, 0.15f, 0.35f, 0.55f);
+  return trapmf(y, 0.45f, 0.65f, 1.0f, 1.0f);
+}
+
+/** Defuzzifikasi centroid Mamdani/Tahani (implikasi MIN, agregasi MAX). */
+static float mamdaniTahaniCentroid(float mu1, int kind1, float mu2, int kind2, float mu3, int kind3) {
+  const int STEPS = 20;
+  float num = 0.0f, den = 0.0f;
+  for (int i = 0; i <= STEPS; i++) {
+    float y = (float)i / (float)STEPS;
+    float agg = 0.0f;
+    agg = fmaxfz(agg, fminfz(mu1, outMuByKind(y, kind1)));
+    agg = fmaxfz(agg, fminfz(mu2, outMuByKind(y, kind2)));
+    agg = fmaxfz(agg, fminfz(mu3, outMuByKind(y, kind3)));
+    num += y * agg;
+    den += agg;
+  }
+  return (den > 1e-6f) ? (num / den) : 0.0f;
+}
+
 // -----------------------------------------------------------------------------
-// JALUR 1 — SUHU UDARA (DHT22) → paranet
-// Setara fuzzyLow / fuzzyMedium / fuzzyHigh pada contoh TA, lalu Sugeno.
-// -----------------------------------------------------------------------------
-// μ Rendah (muR) — setara fuzzyLow(temp):
-//   Suhu <= 24°C        → μ = 1 (sepenuhnya rendah).
-//   24°C < suhu < 27°C  → μ = (27 - suhu) / 3  (turun linear).
-//   Suhu >= 27°C        → μ = 0.
-//
-// μ Sedang (muS) — setara fuzzyMedium(temp):
-//   Suhu <= 24°C atau >= 31°C → μ = 0.
-//   24°C < suhu < 27°C        → μ = (suhu - 24) / 3  (naik).
-//   27°C < suhu < 31°C        → μ = (31 - suhu) / 4  (turun).
-//   Suhu = 27°C               → μ = 1 (puncak segitiga).
-//
-// μ Tinggi (muT) — setara fuzzyHigh(temp):
-//   Suhu <= 27°C        → μ = 0.
-//   27°C < suhu < 31°C  → μ = (suhu - 27) / 4  (naik linear).
-//   Suhu >= 31°C        → μ = 1 (sepenuhnya tinggi).
-//
-// Sugeno: zR=0 (rendah → paranet tidak perlu), zS=0,25, zT=1 (tinggi → perlu).
-// Bukan fuzzyStatus: tidak memilih label "Rendah/Sedang/Tinggi", melainkan skor 0–1.
+// JALUR 1 — SUHU (DHT22) → fuzzy_suhu → servo paranet
+// Input μ: trapmf/trimf suhu (grafik.py). Output: intensitas Rendah/Sedang/Tinggi [0,1].
+// IF suhu Rendah  THEN intensitas Rendah  | IF Sedang THEN Sedang | IF Tinggi THEN Tinggi
 // -----------------------------------------------------------------------------
 static float fuzzyParanetFromTemp(float tempC, bool tempValid) {
   if (!tempValid) return 0.0f;
-  float muR = trapmf(tempC, 0.0f, 0.0f, 24.0f, 27.0f);   // Rendah
-  float muS = trimf(tempC, 24.0f, 27.0f, 31.0f);        // Sedang
-  float muT = trapmf(tempC, 27.0f, 31.0f, 45.0f, 45.0f); // Tinggi
-  const float zR = 0.0f, zS = 0.25f, zT = 1.0f;
-  float w = muR + muS + muT;
-  return (w > 1e-6f) ? (muR * zR + muS * zS + muT * zT) / w : 0.0f;
+  float muR = trapmf(tempC, 0.0f, 0.0f, 24.0f, 27.0f);
+  float muS = trimf(tempC, 24.0f, 27.0f, 31.0f);
+  float muT = trapmf(tempC, 27.0f, 31.0f, 45.0f, 45.0f);
+  return mamdaniTahaniCentroid(muR, OUT_RENDAH, muS, OUT_SEDANG, muT, OUT_TINGGI);
 }
 
 // -----------------------------------------------------------------------------
-// JALUR 2 — KELEMBABAN TANAH (%) → penyiraman
-// -----------------------------------------------------------------------------
-// μ Kering (muK):
-//   Kelembaban <= 40%       → μ = 1.
-//   40% < x < 50%           → μ = (50 - x) / 10.
-//   Kelembaban >= 50%       → μ = 0.
-//
-// μ Lembab (muL) — kisaran optimal cabai rawit ~50–70%:
-//   Di luar 40%–80%         → μ = 0.
-//   40%–50% naik, 50%–70% plató μ=1, 70%–80% turun.
-//
-// μ Basah (muB):
-//   Kelembaban <= 70%       → μ = 0.
-//   70% < x < 80%           → μ = (x - 70) / 10.
-//   Kelembaban >= 80%       → μ = 1 (terlalu basah).
-//
-// Sugeno: zK=1 (kering → butuh air), zL=0,15, zB=0 (basah → tidak siram).
+// JALUR 2 — TANAH (%) → fuzzy_soil → relay air
+// IF Kering THEN intensitas Tinggi (butuh siram) | IF Lembab/Basah THEN Rendah
 // -----------------------------------------------------------------------------
 static float fuzzyWaterFromSoil(int moisturePercent) {
   float x = (float)moisturePercent;
-  float muK = trapmf(x, 0.0f, 0.0f, 40.0f, 50.0f);      // Kering
-  float muL = trapmf(x, 40.0f, 50.0f, 70.0f, 80.0f);    // Lembab
-  float muB = trapmf(x, 70.0f, 80.0f, 100.0f, 100.0f);  // Basah
-  const float zK = 1.0f, zL = 0.15f, zB = 0.0f;
-  float w = muK + muL + muB;
-  return (w > 1e-6f) ? (muK * zK + muL * zL + muB * zB) / w : 0.0f;
+  float muK = trapmf(x, 0.0f, 0.0f, 40.0f, 50.0f);
+  float muL = trapmf(x, 40.0f, 50.0f, 70.0f, 80.0f);
+  float muB = trapmf(x, 70.0f, 80.0f, 100.0f, 100.0f);
+  return mamdaniTahaniCentroid(muK, OUT_TINGGI, muL, OUT_RENDAH, muB, OUT_RENDAH);
 }
 
 // -----------------------------------------------------------------------------
-// JALUR 3 — pH TANAH → koreksi larutan
-// -----------------------------------------------------------------------------
-// μ Asam (muA) — di bawah optimal 6–7:
-//   pH <= 5        → μ = 1.
-//   5 < pH < 6     → μ = (6 - pH) / 1.
-//   pH >= 6        → μ = 0.
-//
-// μ Netral (muN) — optimal:
-//   Plató μ=1 antara pH 6 dan 7; transisi di 5,5–6 dan 7–7,5.
-//
-// μ Basa (muB):
-//   pH <= 7        → μ = 0.
-//   7 < pH < 7,5   → μ = (pH - 7) / 0,5.
-//   pH >= 7,5      → μ = 1.
-//
-// Sugeno: zA=1 (asam → koreksi), zN=0, zB=0 (netral/basa → tidak koreksi asam).
+// JALUR 3 — pH → fuzzy_ph → relay koreksi larutan
+// IF Asam THEN intensitas Tinggi (koreksi) | IF Netral/Basa THEN Rendah
 // -----------------------------------------------------------------------------
 static float fuzzyPhCorrectionFromPh(float ph, bool phValid) {
   if (!phValid) return 0.0f;
-  float muA = trapmf(ph, 3.0f, 3.0f, 5.0f, 6.0f);        // Asam
-  float muN = trapmf(ph, 5.5f, 6.0f, 7.0f, 7.5f);        // Netral
-  float muB = trapmf(ph, 7.0f, 7.5f, 9.0f, 9.0f);        // Basa
-  const float zA = 1.0f, zN = 0.0f, zB = 0.0f;
-  float w = muA + muN + muB;
-  return (w > 1e-6f) ? (muA * zA + muN * zN + muB * zB) / w : 0.0f;
+  float muA = trapmf(ph, 3.0f, 3.0f, 5.0f, 6.0f);
+  float muN = trapmf(ph, 5.5f, 6.0f, 7.0f, 7.5f);
+  float muB = trapmf(ph, 7.0f, 7.5f, 9.0f, 9.0f);
+  return mamdaniTahaniCentroid(muA, OUT_TINGGI, muN, OUT_RENDAH, muB, OUT_RENDAH);
 }
 
-/** Atur servo paranet: sudut OFF vs ON (logika fuzzy sama dengan sebelumnya relay). */
+/** Servo paranet: OFF/ON dari fuzzy_suhu >= ambang (bukan sudut kontinu). */
 static void paranetServoApply(bool deployed) {
   int a = deployed ? PARANET_SERVO_ANGLE_ON : PARANET_SERVO_ANGLE_OFF;
   if (a < 0) a = 0;
@@ -351,7 +320,7 @@ static bool supabaseInsert(
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Prefer", "return=minimal");
 
-  // Supabase: fuzzy_suhu = skor fuzzy suhu (paranet), fuzzy_soil = tanah (air), fuzzy_ph = pH.
+  // Supabase: fuzzy_* = skor centroid Tahani; relay_paranet = flag servo paranet.
   String body = "{";
   body += "\"temperature\":" + String(temperature, 2) + ",";
   body += "\"humidity\":" + String(humidity, 2) + ",";
@@ -401,7 +370,7 @@ void setup() {
   ensureWiFi();
   ensureMqtt();
 
-  Serial.println("Mulai monitoring pertanian IoT...");
+  Serial.println("Greenhouse cabai rawit — Fuzzy Tahani (Mamdani) — monitoring IoT");
 }
 
 void loop() {
@@ -465,8 +434,7 @@ void loop() {
   digitalWrite(DMSpin, HIGH);
   digitalWrite(LED_PIN, LOW);
 
-  // ===== Defuzzifikasi praktis: skor Sugeno 0–1, ON jika >= RELAY_FUZZY_THRESHOLD =====
-  // (Bukan fuzzyStatus yang memilih kategori μ terbesar — skor kontinu lalu ambang 0,5.)
+  // ===== Defuzzifikasi Tahani (centroid 0–1), aktuator ON jika >= RELAY_FUZZY_THRESHOLD =====
   float ph = lastReading_pH;
   bool phValid = (ph >= 3.0f && ph <= 9.0f);
 
@@ -510,7 +478,7 @@ void loop() {
     doc["humidity"] = h;
     doc["soil"] = moisturePercent;
     doc["ph"] = phRounded;
-    // Skor 0–1 untuk dashboard (paranet / air / koreksi pH)
+    // Skor centroid Tahani 0–1 (index.html, ambang tampilan 0,5)
     doc["fuzzy_suhu"] = scoreParanet;
     doc["fuzzy_soil"] = scoreSoil;
     doc["fuzzy_ph"] = scorePh;

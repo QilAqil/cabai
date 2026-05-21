@@ -1,12 +1,10 @@
 <!DOCTYPE html>
 <!--
-  Dashboard web untuk sistem pertanian IoT.
-  Halaman ini:
-  - Terkoneksi ke broker MQTT EMQX via WebSocket (wss).
-  - Subscribe topic "pertanian/sensor" yang dikirim ESP32.
-  - Menampilkan data sensor, skor fuzzy_suhu / fuzzy_soil / fuzzy_ph, servo paranet + dua relay (air, koreksi pH).
-  - Memuat riwayat log dari Supabase (REST) — sama dengan data yang di-insert ESP32.
-    Pastikan RLS mengizinkan SELECT untuk kunci anon / publishable yang dipakai di sini.
+  Dashboard — Greenhouse cabai rawit (selaras index.ino).
+  - MQTT EMQX (wss), topik pertanian/sensor
+  - Skor Fuzzy Tahani (Mamdani): fuzzy_suhu, fuzzy_soil, fuzzy_ph = centroid 0–1; aktuator ON jika ≥ 0,5
+  - Servo paranet (relay_paranet), relay air, relay pH (relay_dolomit)
+  - Riwayat Supabase tabel pertanian (RLS SELECT untuk kunci publishable)
 -->
 <html>
 <head>
@@ -15,7 +13,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <!-- Judul tab browser -->
-  <title>Dashboard Pertanian IoT</title>
+  <title>Dashboard Greenhouse Cabai Rawit — Fuzzy Tahani</title>
 
   <!-- Library MQTT client untuk JavaScript (via CDN) -->
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
@@ -228,6 +226,18 @@ body{
   color:var(--text-muted);
   text-align:center;
 }
+.fuzzy-note{
+  font-size:0.72rem;
+  color:var(--text-muted);
+  margin:0 0 8px;
+  line-height:1.35;
+}
+.fuzzy-high{
+  color:#0c7a24;
+}
+.fuzzy-low{
+  color:var(--text-main);
+}
 /* Penyesuaian tampilan untuk layar kecil (mobile) */
 @media (max-width:600px){
   .title{
@@ -243,8 +253,8 @@ body{
 <body>
 <div class="wrapper">
   <div class="header">
-    <div class="title">Monitoring Pertanian IoT</div>
-    <div class="subtitle">Realtime MQTT EMQX &amp; riwayat log Supabase</div>
+    <div class="title">Monitoring Greenhouse Cabai Rawit</div>
+    <div class="subtitle">Fuzzy Tahani (Mamdani) · MQTT real-time · riwayat Supabase · aktuator ON jika skor ≥ 0,5</div>
   </div>
 
   <div class="grid">
@@ -286,24 +296,29 @@ body{
 
     <div class="card">
       <div class="card-header">
-        <div class="card-title">Kontrol &amp; skor</div>
+        <div class="card-title">Kontrol Fuzzy Tahani</div>
+        <span class="pill ok" title="Metode di ESP32">Mamdani</span>
       </div>
+      <p class="fuzzy-note">
+        Skor 0–1 hasil defuzzifikasi <strong>centroid</strong> (fuzzifikasi → aturan IF-THEN → MIN–MAX).
+        Sama dengan perhitungan di <code>index.ino</code>.
+      </p>
       <div class="metric-row">
-        <div class="metric-label">Skor fuzzy suhu (paranet)</div>
+        <div class="metric-label">Skor Tahani suhu → paranet</div>
         <div class="metric-value">
-          <span id="fuzzy_suhu">-</span>
+          <span id="fuzzy_suhu">-</span><span class="metric-unit"> / 1</span>
         </div>
       </div>
       <div class="metric-row">
-        <div class="metric-label">Skor siram (tanah)</div>
+        <div class="metric-label">Skor Tahani tanah → air</div>
         <div class="metric-value">
-          <span id="fuzzy_soil">-</span>
+          <span id="fuzzy_soil">-</span><span class="metric-unit"> / 1</span>
         </div>
       </div>
       <div class="metric-row">
-        <div class="metric-label">Skor koreksi pH</div>
+        <div class="metric-label">Skor Tahani pH → koreksi</div>
         <div class="metric-value">
-          <span id="fuzzy_ph">-</span>
+          <span id="fuzzy_ph">-</span><span class="metric-unit"> / 1</span>
         </div>
       </div>
       <div class="relay-row">
@@ -340,9 +355,9 @@ body{
             <th>RH (%)</th>
             <th>Tanah (%)</th>
             <th>pH</th>
-            <th>Fz.Suhu</th>
-            <th>Fz.Tnh</th>
-            <th>Fz.pH</th>
+            <th>Tahani Suhu</th>
+            <th>Tahani Tanah</th>
+            <th>Tahani pH</th>
             <th>R.Par</th>
             <th>R.Air</th>
             <th>R.pH</th>
@@ -364,7 +379,10 @@ body{
 </div>
 
 <script>
-// Supabase (selaras dengan index.ino — kunci publishable; RLS harus mengizinkan SELECT)
+// Selaras index.ino: Fuzzy Tahani Mamdani, kolom fuzzy_* = skor centroid 0–1
+
+// Supabase (kunci publishable; RLS harus mengizinkan SELECT)
+const FUZZY_THRESHOLD = 0.5;
 const SUPABASE_URL = "https://sptomqebtvclfebaktof.supabase.co";
 const SUPABASE_KEY = "sb_publishable_jqEF4hY0nK0Bu0BkKK2ayQ_eW_8fh_u";
 const SUPABASE_TABLE = "pertanian";
@@ -387,6 +405,19 @@ let lastSensorMessageTs = 0;
 
 function relayOn(v) {
   return (v === true) || (v === 1) || (v === "1") || (v === "true");
+}
+
+/** Tampilkan skor centroid Tahani; hijau jika ≥ ambang (selaras RELAY_FUZZY_THRESHOLD). */
+function setFuzzyScore(elId, value) {
+  const el = document.getElementById(elId);
+  if (value == null || value === "" || isNaN(Number(value))) {
+    el.innerText = "-";
+    el.className = "";
+    return;
+  }
+  const n = Number(value);
+  el.innerText = n.toFixed(2);
+  el.className = n >= FUZZY_THRESHOLD ? "fuzzy-high" : "fuzzy-low";
 }
 
 // Membuat koneksi MQTT client
@@ -417,12 +448,9 @@ client.on("message", function (topic, message) {
     phVal === null || phVal === "-" ? "-" : Number(phVal).toFixed(1);
 
   const fzSuhu = data.fuzzy_suhu != null ? data.fuzzy_suhu : data.fuzzy_air;
-  document.getElementById("fuzzy_suhu").innerText =
-    fzSuhu != null ? Number(fzSuhu).toFixed(2) : "-";
-  document.getElementById("fuzzy_soil").innerText =
-    data.fuzzy_soil != null ? Number(data.fuzzy_soil).toFixed(2) : "-";
-  document.getElementById("fuzzy_ph").innerText =
-    data.fuzzy_ph != null ? Number(data.fuzzy_ph).toFixed(2) : "-";
+  setFuzzyScore("fuzzy_suhu", fzSuhu);
+  setFuzzyScore("fuzzy_soil", data.fuzzy_soil);
+  setFuzzyScore("fuzzy_ph", data.fuzzy_ph);
 
   const paranetOn = relayOn(
     data.relay_paranet != null ? data.relay_paranet : data.paranet_active

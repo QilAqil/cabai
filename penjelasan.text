@@ -101,3 +101,37 @@ python diagram_blok_sistem.py
 ```
 
 Keluaran: `diagram_blok_sistem.png` di folder proyek yang sama.
+
+Penjelasan diagram blok sistem monitoring dan kontrol greenhouse cabai rawit
+
+ESP32 berperan sebagai pusat sistem: menerima data dari sensor (suhu & kelembaban udara, kelembaban tanah, pH tanah), memprosesnya dengan logika fuzzy Sugeno tiga jalur, mengendalikan servo paranet dan relay air serta relay pH, lalu mengirim data ke database Supabase (REST HTTPS) dan ke broker MQTT (WiFi) agar dapat ditampilkan di dashboard web.
+
+Sensor pH tanah (beserta modul driver DMS) digunakan untuk mengukur derajat keasaman tanah di media tanam cabai rawit. Sinyal analog dibaca ESP32 melalui pin ADC (GPIO34), sedangkan pin GPIO13 digunakan untuk mengaktifkan modul DMS agar pembacaan pH stabil.
+
+Sensor kelembaban tanah (soil moisture) digunakan untuk mengukur tingkat kelembaban media tanam. Modul probe menghasilkan sinyal analog pada pin AO yang dibaca ESP32 melalui ADC (GPIO35), kemudian dipetakan menjadi persentase kelembaban tanah (0–100%) untuk kebutuhan monitoring dan kontrol penyiraman.
+
+Sensor suhu dan kelembaban udara (DHT22 / AM2302) digunakan untuk mengukur suhu dan kelembaban udara di dalam greenhouse. Data dikirim secara digital ke ESP32 (GPIO4) sebagai acuan kondisi lingkungan dan untuk jalur fuzzy pengendalian paranet (naungan).
+
+Sensor pH tanah dapat tidak langsung menuju ESP32 jika keluaran modul masih berlevel 5 Volt—sinyal perlu melewati logic level converter atau pembagi tegangan terlebih dahulu agar masuk ke input ADC ESP32 yang aman pada 3,3 Volt, sehingga pembacaan lebih akurat dan perangkat terlindungi. Sensor DHT22 dan sensor kelembaban tanah pada umumnya langsung terhubung ke ESP32 (level 3,3 V) karena modul sudah sesuai dengan logika ESP32 dan pembacaannya stabil tanpa level shifter.
+
+Logic Level Converter digunakan untuk mengubah level logika dari 5 Volt ke 3,3 Volt (atau sebaliknya) pada sinyal sensor analog/digital yang masih menggunakan tegangan 5 V, agar kompatibel dengan pin masukan ESP32.
+
+Database (Supabase) digunakan sebagai penyimpanan data historis yang dikirim dari ESP32, berupa nilai sensor, skor fuzzy (fuzzy_suhu, fuzzy_soil, fuzzy_ph), dan status aktuator (relay_paranet, relay_air, relay_dolomit) pada tabel pertanian.
+
+Sumber daya adaptor 12 Volt DC digunakan untuk memberikan daya ke seluruh sistem, termasuk ESP32 dan rangkaian pendukung sesuai skema instalasi greenhouse.
+
+Modul DC-DC Step Down digunakan untuk menurunkan tegangan 12 Volt DC menjadi 5 Volt DC guna mensuplai perangkat yang membutuhkan 5 Volt DC, seperti beberapa modul sensor di lapangan.
+
+Dashboard web (index.html) digunakan untuk menampilkan data secara real-time (melalui MQTT) dan riwayat data (melalui query ke Supabase). Pada sistem ini, peran tampilan lokal LCD digantikan oleh antarmuka berbasis browser.
+
+Tambahan (aktuator dan komunikasi):
+
+Servo paranet digunakan untuk menggerakkan naungan greenhouse berdasarkan hasil fuzzy suhu udara; dikendalikan melalui sinyal PWM (GPIO25).
+
+Relay air digunakan untuk mengaktifkan pompa atau penyiraman ketika kelembaban tanah menurut fuzzy memerlukan penambahan air (GPIO26).
+
+Relay pH digunakan untuk mengaktifkan larutan koreksi pH tanah ketika hasil fuzzy pH menunjukkan kebutuhan koreksi (GPIO27).
+
+Broker MQTT (EMQX) digunakan sebagai saluran komunikasi real-time antara ESP32 dan dashboard web, sehingga pengguna dapat memantau kondisi greenhouse tanpa menunggu penyimpanan database saja.
+
+Perbedaan utama dengan contoh air: di sistem Anda yang diukur adalah tanah dan udara greenhouse (bukan air), tidak ada sensor kekeruhan, dan tampilan memakai dashboard web + Supabase + MQTT, bukan LCD.

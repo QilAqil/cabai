@@ -112,7 +112,7 @@ const int DRY_THRESHOLD_PERCENT = 50; // referensi kering (optimal cabai rawit 5
 // - Paranet: servo (PWM) menggantikan relay — pasang library "ESP32Servo" (Arduino Library Manager).
 // - Air & pH: relay aktif-LOW (LOW = ON). RELAY_ACTIVE_LOW = false jika modul aktif-HIGH.
 const bool RELAY_ACTIVE_LOW = true;
-const int PARANET_SERVO_PIN = 25; // sinyal PWM servo paranet (sesuaikan wiring)
+const int PARANET_SERVO_PIN = 21; // sinyal PWM servo paranet (sesuaikan wiring)
 // Sudut servo (0–180): kalibrasi mekanik roll paranet — boleh dibalik jika arah terbalik.
 const int PARANET_SERVO_ANGLE_OFF = 0;   // suhu rendah / tidak perlu naungan
 const int PARANET_SERVO_ANGLE_ON  = 90; // suhu tinggi / paranet diturunkan (ubah sesuai mekanik)
@@ -137,7 +137,23 @@ int   PH_ADC;          // nilai ADC mentah untuk pH
 float lastReading_pH;  // pH terakhir yang terbaca
 float pH_value;        // nilai pH saat ini
 
-// ----- Fungsi keanggotaan (selaras grafik.py / literatur) -----
+// =============================================================================
+// LOGIKA FUZZY (3 jalur terpisah — selaras grafik.py)
+// =============================================================================
+// Pola fuzzifikasi mirip contoh fuzzyLow / fuzzyMedium / fuzzyHigh:
+//   setiap input dibagi 3 kategori linguistik, μ(x) dihitung dengan kurva linear.
+//
+// Perbedaan dengan contoh fuzzyStatus (ambil μ terbesar → "Rendah"/"Sedang"/"Tinggi"):
+//   di sini dipakai FUZZY SUGENO — konsekuen numerik z, lalu skor 0–1:
+//     skor = (μ1*z1 + μ2*z2 + μ3*z3) / (μ1 + μ2 + μ3)
+//   Aktuator ON jika skor >= RELAY_FUZZY_THRESHOLD (0,5).
+//
+// Jalur 1: suhu DHT22     → fuzzy_suhu  → servo paranet (GPIO21)
+// Jalur 2: kelembaban %   → fuzzy_soil  → relay air (GPIO26)
+// Jalur 3: pH tanah       → fuzzy_ph    → relay pH (GPIO27)
+// =============================================================================
+
+// trimf: fungsi keanggotaan SEGITIGA (a = kiri, b = puncak μ=1, c = kanan).
 static float trimf(float x, float a, float b, float c) {
   if ((a == b) && (x == a)) return 1.0f;
   if ((b == c) && (x == c)) return 1.0f;
@@ -147,6 +163,7 @@ static float trimf(float x, float a, float b, float c) {
   return (c - x) / (c - b);
 }
 
+// trapmf: fungsi keanggotaan TRAPESIUM / bahu (plató μ=1 antara b dan c).
 static float trapmf(float x, float a, float b, float c, float d) {
   if ((a == b) && (x == a)) return 1.0f;
   if ((c == d) && (x == d)) return 1.0f;
@@ -156,34 +173,91 @@ static float trapmf(float x, float a, float b, float c, float d) {
   return (d - x) / (d - c);
 }
 
-/** Suhu udara: Rendah / Sedang / Tinggi → skor kebutuhan paranet 0–1 (Sugeno singleton). */
+// -----------------------------------------------------------------------------
+// JALUR 1 — SUHU UDARA (DHT22) → paranet
+// Setara fuzzyLow / fuzzyMedium / fuzzyHigh pada contoh TA, lalu Sugeno.
+// -----------------------------------------------------------------------------
+// μ Rendah (muR) — setara fuzzyLow(temp):
+//   Suhu <= 24°C        → μ = 1 (sepenuhnya rendah).
+//   24°C < suhu < 27°C  → μ = (27 - suhu) / 3  (turun linear).
+//   Suhu >= 27°C        → μ = 0.
+//
+// μ Sedang (muS) — setara fuzzyMedium(temp):
+//   Suhu <= 24°C atau >= 31°C → μ = 0.
+//   24°C < suhu < 27°C        → μ = (suhu - 24) / 3  (naik).
+//   27°C < suhu < 31°C        → μ = (31 - suhu) / 4  (turun).
+//   Suhu = 27°C               → μ = 1 (puncak segitiga).
+//
+// μ Tinggi (muT) — setara fuzzyHigh(temp):
+//   Suhu <= 27°C        → μ = 0.
+//   27°C < suhu < 31°C  → μ = (suhu - 27) / 4  (naik linear).
+//   Suhu >= 31°C        → μ = 1 (sepenuhnya tinggi).
+//
+// Sugeno: zR=0 (rendah → paranet tidak perlu), zS=0,25, zT=1 (tinggi → perlu).
+// Bukan fuzzyStatus: tidak memilih label "Rendah/Sedang/Tinggi", melainkan skor 0–1.
+// -----------------------------------------------------------------------------
 static float fuzzyParanetFromTemp(float tempC, bool tempValid) {
   if (!tempValid) return 0.0f;
-  float muR = trapmf(tempC, 0.0f, 0.0f, 24.0f, 27.0f);
-  float muS = trimf(tempC, 24.0f, 27.0f, 31.0f);
-  float muT = trapmf(tempC, 27.0f, 31.0f, 45.0f, 45.0f);
+  float muR = trapmf(tempC, 0.0f, 0.0f, 24.0f, 27.0f);   // Rendah
+  float muS = trimf(tempC, 24.0f, 27.0f, 31.0f);        // Sedang
+  float muT = trapmf(tempC, 27.0f, 31.0f, 45.0f, 45.0f); // Tinggi
   const float zR = 0.0f, zS = 0.25f, zT = 1.0f;
   float w = muR + muS + muT;
   return (w > 1e-6f) ? (muR * zR + muS * zS + muT * zT) / w : 0.0f;
 }
 
-/** Kelembaban tanah: Kering / Lembab / Basah → skor penyiraman 0–1. */
+// -----------------------------------------------------------------------------
+// JALUR 2 — KELEMBABAN TANAH (%) → penyiraman
+// -----------------------------------------------------------------------------
+// μ Kering (muK):
+//   Kelembaban <= 40%       → μ = 1.
+//   40% < x < 50%           → μ = (50 - x) / 10.
+//   Kelembaban >= 50%       → μ = 0.
+//
+// μ Lembab (muL) — kisaran optimal cabai rawit ~50–70%:
+//   Di luar 40%–80%         → μ = 0.
+//   40%–50% naik, 50%–70% plató μ=1, 70%–80% turun.
+//
+// μ Basah (muB):
+//   Kelembaban <= 70%       → μ = 0.
+//   70% < x < 80%           → μ = (x - 70) / 10.
+//   Kelembaban >= 80%       → μ = 1 (terlalu basah).
+//
+// Sugeno: zK=1 (kering → butuh air), zL=0,15, zB=0 (basah → tidak siram).
+// -----------------------------------------------------------------------------
 static float fuzzyWaterFromSoil(int moisturePercent) {
   float x = (float)moisturePercent;
-  float muK = trapmf(x, 0.0f, 0.0f, 40.0f, 50.0f);
-  float muL = trapmf(x, 40.0f, 50.0f, 70.0f, 80.0f);
-  float muB = trapmf(x, 70.0f, 80.0f, 100.0f, 100.0f);
+  float muK = trapmf(x, 0.0f, 0.0f, 40.0f, 50.0f);      // Kering
+  float muL = trapmf(x, 40.0f, 50.0f, 70.0f, 80.0f);    // Lembab
+  float muB = trapmf(x, 70.0f, 80.0f, 100.0f, 100.0f);  // Basah
   const float zK = 1.0f, zL = 0.15f, zB = 0.0f;
   float w = muK + muL + muB;
   return (w > 1e-6f) ? (muK * zK + muL * zL + muB * zB) / w : 0.0f;
 }
 
-/** pH: Asam / Netral / Basa → skor koreksi pH 0–1 (asam butuh koreksi). */
+// -----------------------------------------------------------------------------
+// JALUR 3 — pH TANAH → koreksi larutan
+// -----------------------------------------------------------------------------
+// μ Asam (muA) — di bawah optimal 6–7:
+//   pH <= 5        → μ = 1.
+//   5 < pH < 6     → μ = (6 - pH) / 1.
+//   pH >= 6        → μ = 0.
+//
+// μ Netral (muN) — optimal:
+//   Plató μ=1 antara pH 6 dan 7; transisi di 5,5–6 dan 7–7,5.
+//
+// μ Basa (muB):
+//   pH <= 7        → μ = 0.
+//   7 < pH < 7,5   → μ = (pH - 7) / 0,5.
+//   pH >= 7,5      → μ = 1.
+//
+// Sugeno: zA=1 (asam → koreksi), zN=0, zB=0 (netral/basa → tidak koreksi asam).
+// -----------------------------------------------------------------------------
 static float fuzzyPhCorrectionFromPh(float ph, bool phValid) {
   if (!phValid) return 0.0f;
-  float muA = trapmf(ph, 3.0f, 3.0f, 5.0f, 6.0f);
-  float muN = trapmf(ph, 5.5f, 6.0f, 7.0f, 7.5f);
-  float muB = trapmf(ph, 7.0f, 7.5f, 9.0f, 9.0f);
+  float muA = trapmf(ph, 3.0f, 3.0f, 5.0f, 6.0f);        // Asam
+  float muN = trapmf(ph, 5.5f, 6.0f, 7.0f, 7.5f);        // Netral
+  float muB = trapmf(ph, 7.0f, 7.5f, 9.0f, 9.0f);        // Basa
   const float zA = 1.0f, zN = 0.0f, zB = 0.0f;
   float w = muA + muN + muB;
   return (w > 1e-6f) ? (muA * zA + muN * zN + muB * zB) / w : 0.0f;
@@ -391,13 +465,14 @@ void loop() {
   digitalWrite(DMSpin, HIGH);
   digitalWrite(LED_PIN, LOW);
 
-  // ===== Keputusan aktuator: suhu → servo paranet; tanah / pH → relay =====
+  // ===== Defuzzifikasi praktis: skor Sugeno 0–1, ON jika >= RELAY_FUZZY_THRESHOLD =====
+  // (Bukan fuzzyStatus yang memilih kategori μ terbesar — skor kontinu lalu ambang 0,5.)
   float ph = lastReading_pH;
   bool phValid = (ph >= 3.0f && ph <= 9.0f);
 
-  float scoreParanet = fuzzyParanetFromTemp(t, dhtOk);
-  float scoreSoil = fuzzyWaterFromSoil(moisturePercent);
-  float scorePh = fuzzyPhCorrectionFromPh(ph, phValid);
+  float scoreParanet = fuzzyParanetFromTemp(t, dhtOk);       // → fuzzy_suhu
+  float scoreSoil = fuzzyWaterFromSoil(moisturePercent);    // → fuzzy_soil
+  float scorePh = fuzzyPhCorrectionFromPh(ph, phValid);    // → fuzzy_ph
 
   bool paranetOn = dhtOk && (scoreParanet >= RELAY_FUZZY_THRESHOLD);
   bool waterOn = (scoreSoil >= RELAY_FUZZY_THRESHOLD);

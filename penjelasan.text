@@ -166,6 +166,8 @@ python grafik.py
 
 **Catatan:** Grafik input saja **belum** menampilkan seluruh Tahani (aturan, MIN–MAX, centroid); itu dijelaskan di flowchart & kode. Untuk laporan: gambar input = langkah fuzzifikasi; gambar output = himpunan konsekuen sebelum defuzzifikasi.
 
+**Penjelasan lengkap perhitungan fuzzy (fuzzifikasi, aturan, MIN–MAX, centroid, contoh angka, ambang 0,5):** lihat file **`penjelasan_fuzzy.text`** di folder proyek yang sama.
+
 ### Kesesuaian dengan skema gambar lama
 
 | Aspek | Gambar lama | Sistem index.ino + index.html |

@@ -14,10 +14,61 @@ Firmware: Fuzzy Tahani (Mamdani) 3 jalur (suhu→servo paranet, tanah→relay ai
 - Kalibrasi: putar potensiometer modul, lalu sesuaikan DRY_VALUE / WET_VALUE di index.ino
 
 ### Sensor pH tanah + DMS
-- DMS → GPIO13; analog pH → GPIO34
+- DMS → GPIO13 (kabel biru); analog pH → GPIO34 (kabel ungu)
+- VCC modul pH + DMS → **3,3 V**, GND common dengan ESP32
 - Ukur tegangan AOUT dengan multimeter saat idle:
   - Maks ≤ 3,3 V → **tanpa** pembagi
   - Maks ~5 V → pembagi **10 kΩ** (atas ke sinyal) + **20 kΩ** (bawah ke GND) ke GPIO34
+
+#### Penjelasan rinci `DMSpin` & `PH_ADC_PIN` (index.ino baris 132–133)
+
+Dua konstanta di firmware mendefinisikan **pin ESP32 untuk sensor pH tanah** (probe + modul kondisioner sinyal **DMS**). Peran masing-masing pin berbeda: satu **mengendalikan modul**, satu **membaca nilai pH**.
+
+**1. `DMSpin = 13` (GPIO13, kabel biru)**
+
+- **Fungsi:** pin **digital OUTPUT** untuk **menyalakan / mematikan modul DMS** (driver/kondisioner sinyal probe pH).
+- **Mengapa perlu:** probe pH di tanah menghasilkan sinyal lemah; sinyal tidak stabil jika dibaca terus-menerus tanpa kondisioner. Modul DMS mengkondisikan sinyal probe, memberi waktu stabilisasi sebelum ADC membaca, dan menghemat daya (modul tidak selalu aktif).
+- **Logika di firmware (aktif-LOW):**
+
+  | Level GPIO13 | Arti |
+  |--------------|------|
+  | **HIGH** | DMS **mati** (idle: awal `setup()`, setelah pembacaan selesai) |
+  | **LOW** | DMS **aktif** — modul menyiapkan sinyal pH |
+
+- **Urutan di `loop()`:** `digitalWrite(DMSpin, LOW)` → tunggu **10 detik** (`waitWithMqtt`, sambil tetap jaga koneksi MQTT) → baca ADC di GPIO34 → `digitalWrite(DMSpin, HIGH)`.
+- **Wiring:** GPIO13 → pin kontrol modul DMS; GND common; VCC modul 3,3 V.
+
+**2. `PH_ADC_PIN = 34` (GPIO34, kabel ungu)**
+
+- **Fungsi:** pin **ADC (Analog-to-Digital Converter)** — **hanya input** — untuk membaca **tegangan analog** keluaran modul pH setelah DMS aktif.
+- **Cara kerja:** ESP32 mengonversi tegangan (0–3,3 V) menjadi angka digital **0–4095** (12-bit), lalu firmware menghitung pH:
+
+  1. `PH_ADC = analogRead(PH_ADC_PIN)`
+  2. Skala ke ~10-bit: `adc10bit = PH_ADC / 4.0`
+  3. Rumus kalibrasi (regresi linear, selaras `ph.ino`): `pH_raw = (-0.0233 × adc10bit) + 12.698`
+  4. **Validasi:** pH **3,0–9,0** dianggap valid (rentang tanah); di luar itu → sensor dianggap putus / pembacaan tidak valid (`lastReading_pH = 0`).
+
+- **Keamanan pin:** GPIO34 **input-only** (tidak bisa `digitalWrite`) — cocok untuk ADC. Jika keluaran modul ~5 V, wajib pembagi resistor sebelum GPIO34.
+- **Wiring:** keluaran analog modul pH (AOUT) → GPIO34 (kabel ungu).
+
+**Hubungan kedua pin (satu subsistem pH)**
+
+- **GPIO13** = *kapan modul DMS boleh mengukur* (enable + waktu stabilisasi).
+- **GPIO34** = *berapa nilai pH hasil pengukuran* (baca tegangan → konversi ke pH).
+
+Tanpa GPIO13, sinyal di GPIO34 bisa belum stabil. Tanpa GPIO34, modul DMS tidak punya jalur baca ke ESP32.
+
+**Setelah dibaca, nilai pH dipakai untuk:**
+
+1. **Fuzzy Tahani jalur 3** → `fuzzyPhCorrectionFromPh()` → skor `fuzzy_ph` (0–1, centroid Mamdani).
+2. **Relay pH (GPIO27)** → ON jika `fuzzy_ph ≥ 0,5` dan pH valid (3–9).
+3. **MQTT** (`ph`, `fuzzy_ph`, `relay_ph` / `relay_dolomit`) dan **Supabase** (tabel `pertanian`).
+4. **Dashboard** `index.html` — tampilan real-time dan riwayat.
+
+| Konstanta firmware | Pin | Arah | Peran singkat |
+|--------------------|-----|------|----------------|
+| `DMSpin` | GPIO13 | Output | Enable modul DMS (LOW=on, HIGH=off), jeda 10 s sebelum ADC |
+| `PH_ADC_PIN` | GPIO34 | Input ADC | Baca tegangan pH → konversi ke nilai pH tanah |
 
 ### Servo paranet (GPIO21)
 - VCC → **3,3 V**, GND → GND, sinyal PWM → GPIO21; tanpa resistor di sinyal
@@ -71,7 +122,7 @@ Tidak ada LCD lokal atau notifikasi Telegram di firmware saat ini — penggantin
    - `fuzzy_suhu` dari suhu DHT22 → keputusan servo paranet  
    - `fuzzy_soil` dari % kelembaban tanah → relay air  
    - `fuzzy_ph` dari pH → relay koreksi pH  
-   Defuzzifikasi singleton; relay/servo ON jika skor ≥ 0,5.
+   Defuzzifikasi **centroid** (Tahani/Mamdani); relay/servo ON jika skor ≥ 0,5.
 
 3. **ESP32 → Aktuator**  
    Sinyal PWM ke servo; sinyal digital ke modul relay (active-low sesuai konfigurasi firmware).

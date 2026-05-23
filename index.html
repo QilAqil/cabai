@@ -1,57 +1,59 @@
 <!DOCTYPE html>
+<!-- Deklarasi dokumen HTML5 -->
 <!--
   Dashboard — Greenhouse cabai rawit (selaras index.ino).
   - MQTT EMQX (wss), topik pertanian/sensor
   - Skor Fuzzy Tahani (Mamdani): fuzzy_suhu, fuzzy_soil, fuzzy_ph = centroid 0–1; aktuator ON jika ≥ 0,5
   - Servo paranet (relay_paranet), relay air, relay pH (relay_dolomit)
-  - Riwayat Supabase tabel pertanian (RLS SELECT untuk kunci publishable)
+  - Riwayat Supabase tabel pertanian (maks. 15 baris terbaru; RLS SELECT untuk kunci publishable)
 -->
 <html>
 <head>
-  <!-- Pengaturan encoding karakter dan viewport agar tampilan responsive di mobile -->
+  <!-- Meta: encoding UTF-8 agar karakter Indonesia tampil benar -->
   <meta charset="UTF-8">
+  <!-- Meta: viewport agar layout responsif di HP/tablet -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <!-- Judul tab browser -->
+  <!-- Judul yang muncul di tab browser -->
   <title>Dashboard Greenhouse Cabai Rawit — Fuzzy Tahani</title>
 
-  <!-- Library MQTT client untuk JavaScript (via CDN) -->
+  <!-- Library mqtt.js dari CDN — klien MQTT di browser (WebSocket) -->
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 
-  <!-- CSS internal: mengatur tampilan dashboard -->
+  <!-- ===================== CSS DASHBOARD ===================== -->
   <style>
-/* Variabel warna dan style dasar (CSS custom properties) */
+/* --- Variabel tema (mudah diubah warna global) --- */
 :root{
-  --primary:#9CD5FF;
-  --primary-dark:#5aa6d4;
-  --bg:#e9f5ff;
-  --card-bg:#ffffff;
-  --text-main:#123047;
-  --text-muted:#5b6b7a;
+  --primary:#9CD5FF;       /* warna aksen utama */
+  --primary-dark:#5aa6d4;  /* aksen lebih gelap */
+  --bg:#e9f5ff;             /* latar sekunder */
+  --card-bg:#ffffff;        /* latar kartu putih */
+  --text-main:#123047;      /* teks utama */
+  --text-muted:#5b6b7a;     /* teks sekunder / label */
 }
-/* Reset margin/padding dasar dan memastikan box-sizing konsisten */
+/* Reset: hilangkan margin/padding default browser */
 *{
-  box-sizing:border-box;
+  box-sizing:border-box;     /* padding/border masuk hitungan lebar */
   margin:0;
   padding:0;
 }
-/* Style untuk body: latar gradasi, layout center, font utama */
+/* Body: gradasi biru, konten di tengah layar */
 body{
   font-family: Arial, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: radial-gradient(circle at top, #c9e8ff 0, #9CD5FF 20%, #e9f5ff 60%, #ffffff 100%);
-  min-height:100vh;
+  min-height:100vh;          /* minimal tinggi = tinggi layar */
   display:flex;
-  align-items:center;
-  justify-content:center;
-  padding:16px;
+  align-items:center;        /* vertikal tengah */
+  justify-content:center;    /* horizontal tengah */
+  padding:16px;              /* jarak tepi layar */
   color:var(--text-main);
 }
-/* Pembungkus utama konten agar lebar maksimal tidak terlalu besar */
+/* Pembungkus: batasi lebar maks dashboard */
 .wrapper{
   width:100%;
   max-width:960px;
 }
-/* Header di bagian atas (judul + subjudul) */
+/* Area judul halaman */
 .header{
   text-align:left;
   margin-bottom:16px;
@@ -66,13 +68,13 @@ body{
   color:var(--text-muted);
   margin-top:4px;
 }
-/* Grid responsif untuk menata tiga kartu (Lingkungan, Tanah, Fuzzy) */
+/* Grid 2 kolom: kartu sensor + kartu fuzzy (auto-fit di layar sempit) */
 .grid{
   display:grid;
   grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
   gap:16px;
 }
-/* Style umum setiap card (kotak informasi) */
+/* Gaya kotak kartu umum */
 .card{
   background:var(--card-bg);
   border-radius:16px;
@@ -80,7 +82,7 @@ body{
   box-shadow:0 10px 25px rgba(0,0,0,0.06);
   border:1px solid rgba(0,0,0,0.03);
 }
-/* Header dalam card: judul card + area untuk badge bila diperlukan */
+/* Baris judul di dalam kartu (kiri judul, kanan badge opsional) */
 .card-header{
   display:flex;
   align-items:center;
@@ -92,7 +94,7 @@ body{
   font-weight:600;
   color:var(--text-main);
 }
-/* Badge kecil berbentuk pil (dipakai untuk status) */
+/* Badge status kecil (pill) */
 .pill{
   padding:4px 10px;
   border-radius:999px;
@@ -103,15 +105,15 @@ body{
   background:rgba(0,0,0,0.04);
   color:var(--text-muted);
 }
-.pill.ok{
+.pill.ok{                    /* hijau = sukses / terhubung */
   background:rgba(0,150,0,0.08);
   color:#0c7a24;
 }
-.pill.err{
+.pill.err{                   /* merah = gagal / putus */
   background:rgba(200,0,0,0.08);
   color:#a01111;
 }
-/* Baris metric (label di kiri, nilai di kanan) */
+/* Satu baris metrik: label kiri, nilai kanan */
 .metric-row{
   display:flex;
   justify-content:space-between;
@@ -132,7 +134,7 @@ body{
   color:var(--text-muted);
   margin-left:4px;
 }
-/* Tiga relay dalam satu baris */
+/* Baris tiga badge aktuator (paranet, air, pH) */
 .relay-row{
   display:flex;
   justify-content:space-between;
@@ -158,20 +160,20 @@ body{
 .relay-status{
   font-weight:700;
 }
-.relay-status.on{
+.relay-status.on{            /* aktuator ON */
   color:#0c7a24;
 }
-.relay-status.off{
+.relay-status.off{           /* aktuator OFF */
   color:#a01111;
 }
-/* Bagian status di bawah layout (WiFi, IP, MQTT) */
+/* Footer: status WiFi, IP, MQTT */
 .footer-status{
   margin-top:12px;
   font-size:0.8rem;
   text-align:right;
   color:var(--text-muted);
 }
-/* Riwayat Supabase */
+/* Kartu riwayat Supabase (di bawah grid) */
 .history-card{
   margin-top:16px;
 }
@@ -183,7 +185,7 @@ body{
   flex-wrap:wrap;
   margin-bottom:10px;
 }
-.btn-refresh{
+.btn-refresh{                /* tombol muat ulang tabel */
   font-size:0.75rem;
   padding:6px 12px;
   border-radius:8px;
@@ -195,7 +197,7 @@ body{
 .btn-refresh:hover{
   background:rgba(156,213,255,0.35);
 }
-.table-wrap{
+.table-wrap{                 /* scroll horizontal jika tabel lebar */
   overflow-x:auto;
   border-radius:10px;
   border:1px solid rgba(0,0,0,0.06);
@@ -220,25 +222,25 @@ body{
 .history-table tbody tr:hover{
   background:rgba(156,213,255,0.12);
 }
-.history-empty{
+.history-empty{              /* sel pesan kosong / error */
   padding:12px;
   font-size:0.8rem;
   color:var(--text-muted);
   text-align:center;
 }
-.fuzzy-note{
+.fuzzy-note{                 /* catatan metode fuzzy di kartu kontrol */
   font-size:0.72rem;
   color:var(--text-muted);
   margin:0 0 8px;
   line-height:1.35;
 }
-.fuzzy-high{
+.fuzzy-high{                 /* skor fuzzy ≥ 0,5 (selaras index.ino) */
   color:#0c7a24;
 }
-.fuzzy-low{
+.fuzzy-low{                  /* skor fuzzy < 0,5 */
   color:var(--text-main);
 }
-/* Penyesuaian tampilan untuk layar kecil (mobile) */
+/* Responsif: layar ≤ 600px */
 @media (max-width:600px){
   .title{
     font-size:1.3rem;
@@ -251,41 +253,45 @@ body{
 </head>
 
 <body>
+<!-- ===================== STRUKTUR HALAMAN ===================== -->
 <div class="wrapper">
+
+  <!-- Header: judul proyek TA -->
   <div class="header">
     <div class="title">Monitoring Greenhouse Cabai Rawit</div>
     <div class="subtitle">Fuzzy Tahani (Mamdani) · MQTT real-time · riwayat Supabase · aktuator ON jika skor ≥ 0,5</div>
   </div>
 
+  <!-- Grid utama: sensor + fuzzy -->
   <div class="grid">
+
+    <!-- ----- Kartu 1: Pembacaan Sensor (MQTT real-time dari ESP32) ----- -->
     <div class="card">
       <div class="card-header">
-        <div class="card-title">Lingkungan</div>
+        <div class="card-title">Pembacaan Sensor</div>
       </div>
+      <!-- Suhu udara DHT22 → field JSON "temperature" -->
       <div class="metric-row">
-        <div class="metric-label">Suhu</div>
+        <div class="metric-label">Suhu (DHT22)</div>
         <div class="metric-value">
           <span id="temp">-</span><span class="metric-unit">°C</span>
         </div>
       </div>
+      <!-- Kelembaban udara DHT22 → field JSON "humidity" -->
       <div class="metric-row">
-        <div class="metric-label">Kelembaban Udara</div>
+        <div class="metric-label">Kelembaban Udara (DHT22)</div>
         <div class="metric-value">
           <span id="hum">-</span><span class="metric-unit">%</span>
         </div>
       </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">Tanah</div>
-      </div>
+      <!-- Kelembaban tanah % → field JSON "soil" -->
       <div class="metric-row">
         <div class="metric-label">Kelembaban Tanah</div>
         <div class="metric-value">
           <span id="soil">-</span><span class="metric-unit">%</span>
         </div>
       </div>
+      <!-- pH tanah → field JSON "ph" -->
       <div class="metric-row">
         <div class="metric-label">pH Tanah</div>
         <div class="metric-value">
@@ -294,6 +300,7 @@ body{
       </div>
     </div>
 
+    <!-- ----- Kartu 2: Kontrol Fuzzy Tahani + status aktuator ----- -->
     <div class="card">
       <div class="card-header">
         <div class="card-title">Kontrol Fuzzy Tahani</div>
@@ -303,24 +310,28 @@ body{
         Skor 0–1 hasil defuzzifikasi <strong>centroid</strong> (fuzzifikasi → aturan IF-THEN → MIN–MAX).
         Sama dengan perhitungan di <code>index.ino</code>.
       </p>
+      <!-- Skor centroid jalur suhu → servo paranet -->
       <div class="metric-row">
         <div class="metric-label">Skor Tahani suhu → paranet</div>
         <div class="metric-value">
           <span id="fuzzy_suhu">-</span><span class="metric-unit"> / 1</span>
         </div>
       </div>
+      <!-- Skor centroid jalur tanah → relay air -->
       <div class="metric-row">
         <div class="metric-label">Skor Tahani tanah → air</div>
         <div class="metric-value">
           <span id="fuzzy_soil">-</span><span class="metric-unit"> / 1</span>
         </div>
       </div>
+      <!-- Skor centroid jalur pH → relay koreksi -->
       <div class="metric-row">
         <div class="metric-label">Skor Tahani pH → koreksi</div>
         <div class="metric-value">
           <span id="fuzzy_ph">-</span><span class="metric-unit"> / 1</span>
         </div>
       </div>
+      <!-- Badge ON/OFF aktuator (dari relay_* di payload MQTT) -->
       <div class="relay-row">
         <div class="relay-badge">
           <span class="relay-label">Servo paranet</span>
@@ -338,6 +349,7 @@ body{
     </div>
   </div>
 
+  <!-- ----- Kartu 3: Riwayat log Supabase (REST, bukan MQTT) ----- -->
   <div class="card history-card">
     <div class="history-head">
       <div class="card-title" style="margin:0">Riwayat database (Supabase)</div>
@@ -363,6 +375,7 @@ body{
             <th>R.pH</th>
           </tr>
         </thead>
+        <!-- Baris tabel diisi oleh JavaScript fetchSupabaseHistory() -->
         <tbody id="supabaseRows">
           <tr><td colspan="11" class="history-empty">Memuat…</td></tr>
         </tbody>
@@ -370,44 +383,56 @@ body{
     </div>
   </div>
 
+  <!-- Status konektivitas (diperbarui dari payload MQTT) -->
   <div class="footer-status">
-    <!-- Status WiFi & MQTT ditampilkan di bagian bawah dashboard -->
     WiFi: <span id="wifiStatus" class="pill err">Unknown</span>
     &nbsp;|&nbsp; IP: <span id="wifiIp">-</span>
     &nbsp;|&nbsp; MQTT: <span id="status" class="pill err">Disconnected</span>
   </div>
 </div>
 
+<!-- ===================== JAVASCRIPT ===================== -->
 <script>
-// Selaras index.ino: Fuzzy Tahani Mamdani, kolom fuzzy_* = skor centroid 0–1
-
-// Supabase (kunci publishable; RLS harus mengizinkan SELECT)
+// --- Konfigurasi (selaras index.ino) ---
+// Ambang skor fuzzy untuk warna hijau; sama dengan RELAY_FUZZY_THRESHOLD = 0.5
 const FUZZY_THRESHOLD = 0.5;
+// URL proyek Supabase
 const SUPABASE_URL = "https://sptomqebtvclfebaktof.supabase.co";
+// Kunci publishable (hanya untuk SELECT jika RLS mengizinkan)
 const SUPABASE_KEY = "sb_publishable_jqEF4hY0nK0Bu0BkKK2ayQ_eW_8fh_u";
+// Nama tabel log sensor (sama dengan index.ino tableName)
 const SUPABASE_TABLE = "pertanian";
-const SUPABASE_LIMIT = 25;
+// Maksimal baris riwayat yang ditampilkan (terbaru dulu)
+const SUPABASE_LIMIT = 15;
 
-// Alamat WebSocket MQTT EMQX (port 8084 untuk wss)
+// --- MQTT EMQX via WebSocket Secure ---
+// Endpoint wss broker (port 8084 = WebSocket TLS di EMQX Cloud)
 const host = "wss://n01d3130.ala.asia-southeast1.emqxsl.com:8084/mqtt";
-// Topic yang dipublish ESP32 untuk data sensor
+// Topik yang dipublish ESP32 (index.ino topic_pub)
 const topicPub = "pertanian/sensor";
 
-// Opsi koneksi MQTT (username, password, dan auto-reconnect)
+// Kredensial MQTT + reconnect otomatis setiap 2 detik jika putus
 const options = {
   username: "pertanian",
   password: "pertanian12",
   reconnectPeriod: 2000
 };
 
-// Menyimpan waktu pesan sensor terakhir diterima (dipakai untuk mendeteksi ESP32 offline)
+// Timestamp pesan MQTT terakhir (ms) — untuk deteksi ESP32 offline
 let lastSensorMessageTs = 0;
 
+/**
+ * Normalisasi nilai relay dari JSON ke boolean.
+ * ESP32 mengirim 0/1; kadang string "true"/"1".
+ */
 function relayOn(v) {
   return (v === true) || (v === 1) || (v === "1") || (v === "true");
 }
 
-/** Tampilkan skor centroid Tahani; hijau jika ≥ ambang (selaras RELAY_FUZZY_THRESHOLD). */
+/**
+ * Tampilkan skor fuzzy Tahani (centroid 0–1) pada elemen id.
+ * Hijau (fuzzy-high) jika ≥ FUZZY_THRESHOLD; abu (fuzzy-low) jika di bawah.
+ */
 function setFuzzyScore(elId, value) {
   const el = document.getElementById(elId);
   if (value == null || value === "" || isNaN(Number(value))) {
@@ -420,38 +445,40 @@ function setFuzzyScore(elId, value) {
   el.className = n >= FUZZY_THRESHOLD ? "fuzzy-high" : "fuzzy-low";
 }
 
-// Membuat koneksi MQTT client
+// Inisialisasi koneksi MQTT ke broker
 const client = mqtt.connect(host, options);
 
-// Event: ketika koneksi ke broker berhasil
+// Callback: berhasil terhubung ke broker
 client.on("connect", function () {
   const mqttStatus = document.getElementById("status");
   mqttStatus.innerText = "Connected";
   mqttStatus.classList.remove("err");
   mqttStatus.classList.add("ok");
-  client.subscribe(topicPub);
+  client.subscribe(topicPub);  // dengarkan topik data sensor ESP32
 });
 
+// Callback: pesan baru pada topik subscribe
 client.on("message", function (topic, message) {
 
-  // Parsing payload JSON yang dikirim ESP32
+  // Ubah buffer pesan menjadi objek JavaScript
   const data = JSON.parse(message.toString());
   lastSensorMessageTs = Date.now();
 
-  // Update nilai sensor lingkungan
+  // --- Update kartu Pembacaan Sensor ---
   document.getElementById("temp").innerText = data.temperature ?? "-";
   document.getElementById("hum").innerText = data.humidity ?? "-";
   document.getElementById("soil").innerText = data.soil ?? "-";
-  // pH dibulatkan 1 angka di belakang koma, jika ada
   const phVal = data.ph ?? null;
   document.getElementById("ph").innerText =
     phVal === null || phVal === "-" ? "-" : Number(phVal).toFixed(1);
 
+  // --- Update skor fuzzy (kompatibel nama lama fuzzy_air) ---
   const fzSuhu = data.fuzzy_suhu != null ? data.fuzzy_suhu : data.fuzzy_air;
   setFuzzyScore("fuzzy_suhu", fzSuhu);
   setFuzzyScore("fuzzy_soil", data.fuzzy_soil);
   setFuzzyScore("fuzzy_ph", data.fuzzy_ph);
 
+  // --- Update badge aktuator ---
   const paranetOn = relayOn(
     data.relay_paranet != null ? data.relay_paranet : data.paranet_active
   );
@@ -468,7 +495,7 @@ client.on("message", function (topic, message) {
   document.getElementById("relay_ph").className =
     "relay-status " + (relayPh ? "on" : "off");
 
-  // Status WiFi dikirim ESP32 via field wifi_connected dan wifi_ip
+  // --- Status WiFi dari field ESP32 ---
   const wifiConnected = (data.wifi_connected === true) || (data.wifi_connected === 1) || (data.wifi_connected === "1") || (data.wifi_connected === "true");
   const wifiIp = data.wifi_ip || "-";
 
@@ -480,7 +507,7 @@ client.on("message", function (topic, message) {
   document.getElementById("wifiIp").innerText = wifiIp;
 });
 
-// Event: jika ada error koneksi MQTT (misalnya broker tidak bisa diakses)
+// Callback: error koneksi MQTT (broker down, kredensial salah, dll.)
 client.on("error", function () {
   const mqttStatus = document.getElementById("status");
   mqttStatus.innerText = "Connection Failed";
@@ -488,11 +515,10 @@ client.on("error", function () {
   mqttStatus.classList.add("err");
 });
 
-// Timer periodik: jika dalam beberapa detik tidak ada pesan sensor baru,
-// diasumsikan ESP32 offline sehingga WiFi dianggap Disconnected di dashboard.
+// Cek setiap 5 detik: jika >15 detik tanpa pesan MQTT, anggap ESP32/WiFi offline
 setInterval(function () {
   const now = Date.now();
-  const timeoutMs = 15000; // 15 detik tanpa data dianggap offline
+  const timeoutMs = 15000;
   if (lastSensorMessageTs === 0) return;
   if (now - lastSensorMessageTs > timeoutMs) {
     const wifiStatusEl = document.getElementById("wifiStatus");
@@ -503,6 +529,9 @@ setInterval(function () {
   }
 }, 5000);
 
+/**
+ * Format kolom waktu dari baris Supabase (updated_at / created_at).
+ */
 function formatSupabaseTime(row) {
   const raw = row.updated_at || row.created_at || row.inserted_at || "";
   if (!raw) return "-";
@@ -510,12 +539,19 @@ function formatSupabaseTime(row) {
   return isNaN(d.getTime()) ? String(raw) : d.toLocaleString();
 }
 
+/**
+ * Teks ON/OFF untuk sel tabel riwayat relay.
+ */
 function relayCell(v) {
   if (v === true || v === 1 || v === "1") return "ON";
   if (v === false || v === 0 || v === "0") return "OFF";
   return v != null ? String(v) : "-";
 }
 
+/**
+ * Ambil maks. SUPABASE_LIMIT baris terbaru dari REST API Supabase,
+ * lalu render ke tbody#supabaseRows.
+ */
 async function fetchSupabaseHistory() {
   const tbody = document.getElementById("supabaseRows");
   const pill = document.getElementById("supabaseStatus");
@@ -523,6 +559,7 @@ async function fetchSupabaseHistory() {
   pill.classList.remove("ok", "err");
   pill.classList.add("err");
 
+  // Query: semua kolom, urut id menurun, batasi jumlah baris
   const url =
     SUPABASE_URL +
     "/rest/v1/" +
@@ -558,6 +595,7 @@ async function fetchSupabaseHistory() {
       return;
     }
 
+    // Bangun HTML baris tabel dari setiap record
     tbody.innerHTML = rows
       .map(function (r) {
         return (
@@ -608,8 +646,11 @@ async function fetchSupabaseHistory() {
   }
 }
 
+// Tombol muat ulang riwayat manual
 document.getElementById("supabaseRefresh").addEventListener("click", fetchSupabaseHistory);
+// Muat riwayat saat halaman pertama kali dibuka
 fetchSupabaseHistory();
+// Refresh riwayat otomatis setiap 60 detik
 setInterval(fetchSupabaseHistory, 60000);
 </script>
 

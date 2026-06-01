@@ -1,12 +1,6 @@
 <!DOCTYPE html>
 <!-- Deklarasi dokumen HTML5 -->
-<!--
-  Dashboard — Greenhouse cabai rawit (selaras index.ino).
-  - MQTT EMQX (wss), topik pertanian/sensor
-  - Skor Fuzzy Tahani (Mamdani): fuzzy_suhu, fuzzy_soil, fuzzy_ph = centroid 0–1; aktuator ON jika ≥ 0,5
-  - Servo paranet (relay_paranet), relay air, relay pH (relay_dolomit)
-  - Riwayat Supabase tabel pertanian (maks. 15 baris terbaru; RLS SELECT untuk kunci publishable)
--->
+<!-- Dashboard greenhouse cabai rawit — MQTT real-time + riwayat Supabase -->
 <html>
 <head>
   <!-- Meta: encoding UTF-8 agar karakter Indonesia tampil benar -->
@@ -15,7 +9,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <!-- Judul yang muncul di tab browser -->
-  <title>Dashboard Greenhouse Cabai Rawit — Fuzzy Tahani</title>
+  <title>Dashboard Greenhouse Cabai Rawit</title>
 
   <!-- Library mqtt.js dari CDN — klien MQTT di browser (WebSocket) -->
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
@@ -63,11 +57,30 @@ body{
   font-weight:700;
   color:var(--text-main);
 }
-.subtitle{
-  font-size:0.9rem;
-  color:var(--text-muted);
-  margin-top:4px;
+.header-top{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap;
 }
+.conn-group{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+  font-size:0.78rem;
+}
+.conn-detail{
+  color:var(--text-muted);
+  line-height:1.4;
+}
+.conn-detail .conn-val{
+  font-weight:600;
+  color:var(--text-main);
+}
+.conn-detail .conn-val.ok{ color:#0c7a24; }
+.conn-detail .conn-val.err{ color:#a01111; }
 /* Grid 2 kolom: kartu sensor + kartu fuzzy (auto-fit di layar sempit) */
 .grid{
   display:grid;
@@ -166,13 +179,6 @@ body{
 .relay-status.off{           /* aktuator OFF */
   color:#a01111;
 }
-/* Footer: status WiFi, IP, MQTT */
-.footer-status{
-  margin-top:12px;
-  font-size:0.8rem;
-  text-align:right;
-  color:var(--text-muted);
-}
 /* Kartu riwayat Supabase (di bawah grid) */
 .history-card{
   margin-top:16px;
@@ -228,12 +234,6 @@ body{
   color:var(--text-muted);
   text-align:center;
 }
-.fuzzy-note{                 /* catatan metode fuzzy di kartu kontrol */
-  font-size:0.72rem;
-  color:var(--text-muted);
-  margin:0 0 8px;
-  line-height:1.35;
-}
 .fuzzy-high{                 /* skor fuzzy ≥ 0,5 (selaras index.ino) */
   color:#0c7a24;
 }
@@ -256,42 +256,45 @@ body{
 <!-- ===================== STRUKTUR HALAMAN ===================== -->
 <div class="wrapper">
 
-  <!-- Header: judul proyek TA -->
   <div class="header">
-    <div class="title">Monitoring Greenhouse Cabai Rawit</div>
-    <div class="subtitle">Fuzzy Tahani (Mamdani) · MQTT real-time · riwayat Supabase · aktuator ON jika skor ≥ 0,5</div>
+    <div class="header-top">
+      <div class="title">Monitoring Greenhouse Cabai Rawit</div>
+      <div class="conn-group">
+        <span id="connMain" class="pill err">Terputus</span>
+        <span class="conn-detail">
+          WiFi <span id="wifiStatus" class="conn-val err">-</span>
+          · IP <span id="wifiIp" class="conn-val">-</span>
+          · MQTT <span id="status" class="conn-val err">-</span>
+        </span>
+      </div>
+    </div>
   </div>
 
   <!-- Grid utama: sensor + fuzzy -->
   <div class="grid">
 
-    <!-- ----- Kartu 1: Pembacaan Sensor (MQTT real-time dari ESP32) ----- -->
     <div class="card">
       <div class="card-header">
         <div class="card-title">Pembacaan Sensor</div>
       </div>
-      <!-- Suhu udara DHT22 → field JSON "temperature" -->
       <div class="metric-row">
-        <div class="metric-label">Suhu (DHT22)</div>
+        <div class="metric-label">Suhu</div>
         <div class="metric-value">
           <span id="temp">-</span><span class="metric-unit">°C</span>
         </div>
       </div>
-      <!-- Kelembaban udara DHT22 → field JSON "humidity" -->
       <div class="metric-row">
-        <div class="metric-label">Kelembaban Udara (DHT22)</div>
+        <div class="metric-label">Kelembaban Udara</div>
         <div class="metric-value">
           <span id="hum">-</span><span class="metric-unit">%</span>
         </div>
       </div>
-      <!-- Kelembaban tanah % → field JSON "soil" -->
       <div class="metric-row">
         <div class="metric-label">Kelembaban Tanah</div>
         <div class="metric-value">
           <span id="soil">-</span><span class="metric-unit">%</span>
         </div>
       </div>
-      <!-- pH tanah → field JSON "ph" -->
       <div class="metric-row">
         <div class="metric-label">pH Tanah</div>
         <div class="metric-value">
@@ -300,38 +303,28 @@ body{
       </div>
     </div>
 
-    <!-- ----- Kartu 2: Kontrol Fuzzy Tahani + status aktuator ----- -->
     <div class="card">
       <div class="card-header">
         <div class="card-title">Kontrol Fuzzy Tahani</div>
-        <span class="pill ok" title="Metode di ESP32">Mamdani</span>
       </div>
-      <p class="fuzzy-note">
-        Skor 0–1 hasil defuzzifikasi <strong>centroid</strong> (fuzzifikasi → aturan IF-THEN → MIN–MAX).
-        Sama dengan perhitungan di <code>index.ino</code>.
-      </p>
-      <!-- Skor centroid jalur suhu → servo paranet -->
       <div class="metric-row">
-        <div class="metric-label">Skor Tahani suhu → paranet</div>
+        <div class="metric-label">Suhu → paranet</div>
         <div class="metric-value">
           <span id="fuzzy_suhu">-</span><span class="metric-unit"> / 1</span>
         </div>
       </div>
-      <!-- Skor centroid jalur tanah → relay air -->
       <div class="metric-row">
-        <div class="metric-label">Skor Tahani tanah → air</div>
+        <div class="metric-label">Tanah → air</div>
         <div class="metric-value">
           <span id="fuzzy_soil">-</span><span class="metric-unit"> / 1</span>
         </div>
       </div>
-      <!-- Skor centroid jalur pH → relay koreksi -->
       <div class="metric-row">
-        <div class="metric-label">Skor Tahani pH → koreksi</div>
+        <div class="metric-label">pH → koreksi</div>
         <div class="metric-value">
           <span id="fuzzy_ph">-</span><span class="metric-unit"> / 1</span>
         </div>
       </div>
-      <!-- Badge ON/OFF aktuator (dari relay_* di payload MQTT) -->
       <div class="relay-row">
         <div class="relay-badge">
           <span class="relay-label">Servo paranet</span>
@@ -349,7 +342,6 @@ body{
     </div>
   </div>
 
-  <!-- ----- Kartu 3: Riwayat log Supabase (REST, bukan MQTT) ----- -->
   <div class="card history-card">
     <div class="history-head">
       <div class="card-title" style="margin:0">Riwayat database (Supabase)</div>
@@ -375,7 +367,6 @@ body{
             <th>R.pH</th>
           </tr>
         </thead>
-        <!-- Baris tabel diisi oleh JavaScript fetchSupabaseHistory() -->
         <tbody id="supabaseRows">
           <tr><td colspan="11" class="history-empty">Memuat…</td></tr>
         </tbody>
@@ -383,12 +374,6 @@ body{
     </div>
   </div>
 
-  <!-- Status konektivitas (diperbarui dari payload MQTT) -->
-  <div class="footer-status">
-    WiFi: <span id="wifiStatus" class="pill err">Unknown</span>
-    &nbsp;|&nbsp; IP: <span id="wifiIp">-</span>
-    &nbsp;|&nbsp; MQTT: <span id="status" class="pill err">Disconnected</span>
-  </div>
 </div>
 
 <!-- ===================== JAVASCRIPT ===================== -->
@@ -418,8 +403,26 @@ const options = {
   reconnectPeriod: 2000
 };
 
-// Timestamp pesan MQTT terakhir (ms) — untuk deteksi ESP32 offline
 let lastSensorMessageTs = 0;
+let mqttBrowserConnected = false;
+
+function updateConnSummary() {
+  const recent =
+    lastSensorMessageTs > 0 && Date.now() - lastSensorMessageTs < 15000;
+  const wifiOk = document.getElementById("wifiStatus").classList.contains("ok");
+  const allOk = mqttBrowserConnected && wifiOk && recent;
+  const pill = document.getElementById("connMain");
+  pill.innerText = allOk ? "Terhubung" : "Terputus";
+  pill.classList.toggle("ok", allOk);
+  pill.classList.toggle("err", !allOk);
+}
+
+function setConnVal(elId, text, ok) {
+  const el = document.getElementById(elId);
+  el.innerText = text;
+  el.classList.remove("ok", "err");
+  el.classList.add(ok ? "ok" : "err");
+}
 
 /**
  * Normalisasi nilai relay dari JSON ke boolean.
@@ -450,11 +453,10 @@ const client = mqtt.connect(host, options);
 
 // Callback: berhasil terhubung ke broker
 client.on("connect", function () {
-  const mqttStatus = document.getElementById("status");
-  mqttStatus.innerText = "Connected";
-  mqttStatus.classList.remove("err");
-  mqttStatus.classList.add("ok");
-  client.subscribe(topicPub);  // dengarkan topik data sensor ESP32
+  mqttBrowserConnected = true;
+  setConnVal("status", "Terhubung", true);
+  client.subscribe(topicPub);
+  updateConnSummary();
 });
 
 // Callback: pesan baru pada topik subscribe
@@ -499,20 +501,22 @@ client.on("message", function (topic, message) {
   const wifiConnected = (data.wifi_connected === true) || (data.wifi_connected === 1) || (data.wifi_connected === "1") || (data.wifi_connected === "true");
   const wifiIp = data.wifi_ip || "-";
 
-  const wifiStatusEl = document.getElementById("wifiStatus");
-  wifiStatusEl.innerText = wifiConnected ? "Connected" : "Disconnected";
-  wifiStatusEl.classList.toggle("ok", wifiConnected);
-  wifiStatusEl.classList.toggle("err", !wifiConnected);
-
+  setConnVal("wifiStatus", wifiConnected ? "Terhubung" : "Terputus", wifiConnected);
   document.getElementById("wifiIp").innerText = wifiIp;
+  updateConnSummary();
 });
 
 // Callback: error koneksi MQTT (broker down, kredensial salah, dll.)
 client.on("error", function () {
-  const mqttStatus = document.getElementById("status");
-  mqttStatus.innerText = "Connection Failed";
-  mqttStatus.classList.remove("ok");
-  mqttStatus.classList.add("err");
+  mqttBrowserConnected = false;
+  setConnVal("status", "Gagal", false);
+  updateConnSummary();
+});
+
+client.on("close", function () {
+  mqttBrowserConnected = false;
+  setConnVal("status", "Terputus", false);
+  updateConnSummary();
 });
 
 // Cek setiap 5 detik: jika >15 detik tanpa pesan MQTT, anggap ESP32/WiFi offline
@@ -521,11 +525,9 @@ setInterval(function () {
   const timeoutMs = 15000;
   if (lastSensorMessageTs === 0) return;
   if (now - lastSensorMessageTs > timeoutMs) {
-    const wifiStatusEl = document.getElementById("wifiStatus");
-    wifiStatusEl.innerText = "Disconnected";
-    wifiStatusEl.classList.remove("ok");
-    wifiStatusEl.classList.add("err");
+    setConnVal("wifiStatus", "Terputus", false);
     document.getElementById("wifiIp").innerText = "-";
+    updateConnSummary();
   }
 }, 5000);
 

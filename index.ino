@@ -22,6 +22,8 @@
  *   - fuzzy_ph    ← pH tanah       → relay pH GPIO27
  *
  * Sensor: DHT22 GPIO4 | soil AO GPIO35 | pH ADC GPIO34, DMS GPIO13
+ * 1 wadah: pH dulu → tanah → koreksi bias pH jika probe soil basah (PH_BIAS_WET_SOIL).
+ * Hardware terbaik: MOSFET matikan VCC modul soil saat baca pH (SOIL_PWR_PIN).
  * Cloud: MQTT topic pertanian/sensor (~10 s) | Supabase tabel pertanian (~30 s)
  * Daya: sensor & servo 3,3 V | modul relay 5 V | adaptor 12 V → expansion board
  *
@@ -99,6 +101,8 @@
  const int SOIL_PIN   = 35;   // AO modul soil moisture → ADC
  const int DRY_VALUE  = 3000; // Nilai ADC saat tanah sangat kering (kalibrasi)
  const int WET_VALUE  = 1000; // Nilai ADC saat tanah sangat basah (kalibrasi)
+ const int SOIL_SAMPLES = 15;
+ const unsigned long SOIL_AFTER_PH_MS = 1500UL; // jeda setelah DMS OFF sebelum baca tanah
  
  // LED indikator (biasanya LED built-in di GPIO2):
  // - Dipakai sebagai indikator tanah kering dan status pembacaan pH.
@@ -131,10 +135,77 @@
  // Jika keluaran sudah 0–3,3 V: tanpa resistor pembagi.
  const int DMSpin       = 13; // kabel biru
  const int PH_ADC_PIN   = 34; // kabel ungu
+ const int PH_SAMPLES   = 25;
+ const unsigned long PH_SETTLE_MS = 8000UL; // stabilisasi DMS (LOW = aktif)
+ const int PH_ADC_MIN   = 200;   // di bawah ini: gangguan / putus
+ const int PH_ADC_MAX   = 3800;
+ const int PH_SPREAD_MAX = 220;
+ // Koreksi software 1 wadah: probe soil basah menaikkan pembacaan pH ~0,5–1,0.
+ // Uji: catat pH hanya-probe vs dua-probe, sesuaikan (mis. 8,1→9,0 → set 0,9).
+ const float PH_BIAS_WET_SOIL = 0.9f;
+ const int SOIL_WET_PERCENT_MIN = 35; // % tanah: di atas ini koreksi bias dipakai
+ // Opsional: GPIO25 + MOSFET ke VCC modul soil (-1 = tidak dipakai). Paling akurat untuk 1 wadah.
+ const int SOIL_PWR_PIN = -1;
  
  int   PH_ADC;          // nilai ADC mentah untuk pH
+ int   PH_SPREAD;       // sebaran sampel ADC pH
  float lastReading_pH;  // pH terakhir yang terbaca
  float pH_value;        // nilai pH saat ini
+ bool  phOkSiklus;     // pembacaan siklus ini valid (3–9, ADC wajar)
+ bool  phDikoreksi;    // true jika bias 1-wadah diterapkan
+ 
+ static float lastGoodPh = 7.0f;
+ static bool hasLastGoodPh = false;
+ 
+ static void adcFlushPin(int pin, int n) {
+   for (int i = 0; i < n; i++) {
+     (void)analogRead(pin);
+     delay(5);
+   }
+ }
+ 
+ static int bacaAdcRata(int pin, int nSamples, int &spread) {
+   long sum = 0;
+   int vmin = 4095;
+   int vmax = 0;
+   for (int i = 0; i < nSamples; i++) {
+     int v = analogRead(pin);
+     sum += v;
+     if (v < vmin) vmin = v;
+     if (v > vmax) vmax = v;
+     delay(10);
+   }
+   spread = vmax - vmin;
+   return (int)(sum / nSamples);
+ }
+ 
+ static float adcKePh(int adc) {
+   float adc10bit = (float)adc / 4.0f;
+   return (-0.0233f * adc10bit) + 12.698f;
+ }
+ 
+ static bool phPembacaanValid(float ph, int adc, int spread) {
+   if (adc < PH_ADC_MIN || adc > PH_ADC_MAX) return false;
+   if (spread > PH_SPREAD_MAX) return false;
+   return (ph >= 3.0f && ph <= 9.0f);
+ }
+ 
+ static void soilPowerSet(bool on) {
+   if (SOIL_PWR_PIN < 0) return;
+   pinMode(SOIL_PWR_PIN, OUTPUT);
+   digitalWrite(SOIL_PWR_PIN, on ? HIGH : LOW);
+ }
+ 
+ /** Kurangi bias pH saat probe soil ikut di media basah (setelah % tanah diketahui). */
+ static float koreksiPhSatuWadah(float phRaw, int moisturePercent, bool &applied) {
+   applied = false;
+   if (SOIL_PWR_PIN >= 0) return phRaw;
+   if (moisturePercent < SOIL_WET_PERCENT_MIN) return phRaw;
+   float adj = phRaw - PH_BIAS_WET_SOIL;
+   if (adj < 3.0f || adj > 9.0f) return phRaw;
+   applied = true;
+   return adj;
+ }
  
  // =============================================================================
  // LOGIKA FUZZY TAHANI (Mamdani, 3 jalur — selaras grafik.py)
@@ -353,9 +424,18 @@
    pinMode(SOIL_PIN, INPUT);
    pinMode(LED_PIN, OUTPUT);
  
-    // Sensor pH tanah
+   analogReadResolution(12);
+   analogSetAttenuation(ADC_11db);
+   analogSetPinAttenuation(SOIL_PIN, ADC_11db);
+   analogSetPinAttenuation(PH_ADC_PIN, ADC_11db);
+ 
    pinMode(DMSpin, OUTPUT);
-   digitalWrite(DMSpin, HIGH); // non-aktifkan DMS di awal
+   digitalWrite(DMSpin, HIGH); // DMS nonaktif (HIGH)
+   soilPowerSet(true);
+   if (SOIL_PWR_PIN >= 0) {
+     pinMode(SOIL_PWR_PIN, OUTPUT);
+     digitalWrite(SOIL_PWR_PIN, HIGH);
+   }
  
    // Servo paranet + relay air / pH
    paranetServo.attach(PARANET_SERVO_PIN);
@@ -378,17 +458,9 @@
    ensureMqtt();
    mqttClient.loop();
  
-   // Baca nilai analog (0 - 4095 untuk ESP32)
-   int sensorValue = analogRead(SOIL_PIN);
- 
-   // Konversi ke persen kelembaban (0–100%)
-   // Catatan: pada banyak sensor, nilai ADC KECIL = tanah BASAH, BESAR = tanah KERING
-   int moisturePercent = map(sensorValue, DRY_VALUE, WET_VALUE, 0, 100);
-   moisturePercent = constrain(moisturePercent, 0, 100);
- 
-   // Baca DHT22 (min. ~2 s antar pembacaan disarankan; loop sudah jeda panjang karena pH)
+   // Baca DHT22 (min. ~2 s antar pembacaan disarankan)
    float h = dht.readHumidity();
-   float t = dht.readTemperature(); // default Celcius
+   float t = dht.readTemperature();
    bool dhtOk = !(isnan(h) || isnan(t));
  
    if (!dhtOk) {
@@ -397,46 +469,52 @@
      t = 0;
    }
  
-   // Nyalakan LED kalau tanah kering
-   if (moisturePercent < DRY_THRESHOLD_PERCENT) {
-     digitalWrite(LED_PIN, HIGH);  // Tanah kering -> LED ON (butuh disiram)
-   } else {
-     digitalWrite(LED_PIN, LOW);   // Tanah cukup lembab
-   }
+   // ===== pH dulu — matikan VCC soil jika SOIL_PWR_PIN di-wire =====
+   phDikoreksi = false;
+   soilPowerSet(false);
+   digitalWrite(DMSpin, LOW);
+   waitWithMqtt(PH_SETTLE_MS);
+   adcFlushPin(PH_ADC_PIN, 6);
+   PH_ADC = bacaAdcRata(PH_ADC_PIN, PH_SAMPLES, PH_SPREAD);
+   float pH_raw = adcKePh(PH_ADC);
+   phOkSiklus = phPembacaanValid(pH_raw, PH_ADC, PH_SPREAD);
  
-   // ===== Pembacaan sensor pH tanah (berdasarkan ph.ino) =====
-   // Aktifkan DMS dan LED indikator
-   digitalWrite(DMSpin, LOW);      // aktifkan DMS
-   digitalWrite(LED_PIN, HIGH);    // LED indikator menyala saat pembacaan pH
-   waitWithMqtt(10UL * 1000UL);    // tunggu DMS capture data (10 detik) sambil jaga MQTT
- 
-   PH_ADC = analogRead(PH_ADC_PIN); 
- 
-   // Konversi ADC (12-bit) ke skala 10-bit seperti di ph.ino, lalu hitung pH
-   float adc10bit = PH_ADC / 4.0;  // 0–4095 -> ~0–1023
-   float pH_raw = (-0.0233 * adc10bit) + 12.698;  // rumus regresi linier konversi adc ke pH
- 
-   // Deteksi koneksi sensor pH:
-   // - Soil pH normal kira-kira di 3.0–9.0
-   // - Jika di luar range, besar kemungkinan sensor tidak terhubung / pembacaan tidak valid
-   bool phInSoilRange = (pH_raw >= 3.0f && pH_raw <= 9.0f);
- 
-   if (phInSoilRange) {
-     pH_value = pH_raw;
-     lastReading_pH = pH_value;
-   } else {
-     // Anggap sensor tidak terhubung / tidak valid
-     pH_value = 0.0f;
-     lastReading_pH = 0.0f;
-   }
- 
-   // Nonaktifkan DMS dan matikan LED indikator setelah pembacaan pH
    digitalWrite(DMSpin, HIGH);
-   digitalWrite(LED_PIN, LOW);
+   waitWithMqtt(SOIL_AFTER_PH_MS);
+   soilPowerSet(true);
+ 
+   // ===== Kelembaban tanah =====
+   adcFlushPin(SOIL_PIN, 4);
+   int soilSpread = 0;
+   int soilAdc = bacaAdcRata(SOIL_PIN, SOIL_SAMPLES, soilSpread);
+   int moisturePercent = map(soilAdc, DRY_VALUE, WET_VALUE, 0, 100);
+   moisturePercent = constrain(moisturePercent, 0, 100);
+ 
+   float phPakai = pH_raw;
+   if (phOkSiklus) {
+     phPakai = koreksiPhSatuWadah(pH_raw, moisturePercent, phDikoreksi);
+   }
+ 
+   if (phOkSiklus) {
+     lastGoodPh = phPakai;
+     hasLastGoodPh = true;
+     pH_value = phPakai;
+   } else if (hasLastGoodPh) {
+     pH_value = lastGoodPh;
+   } else {
+     pH_value = 0.0f;
+   }
+   lastReading_pH = pH_value;
+ 
+   if (moisturePercent < DRY_THRESHOLD_PERCENT) {
+     digitalWrite(LED_PIN, HIGH);
+   } else {
+     digitalWrite(LED_PIN, LOW);
+   }
  
    // ===== Defuzzifikasi Tahani (centroid 0–1), aktuator ON jika >= RELAY_FUZZY_THRESHOLD =====
    float ph = lastReading_pH;
-   bool phValid = (ph >= 3.0f && ph <= 9.0f);
+   bool phValid = phOkSiklus && (ph >= 3.0f && ph <= 9.0f);
  
    float scoreParanet = fuzzyParanetFromTemp(t, dhtOk);       // → fuzzy_suhu
    float scoreSoil = fuzzyWaterFromSoil(moisturePercent);    // → fuzzy_soil
@@ -460,6 +538,12 @@
    Serial.print(moisturePercent);
    Serial.print("% pH=");
    Serial.print(phRounded, 1);
+   Serial.print(phOkSiklus ? "" : "(hold)");
+   Serial.print(phDikoreksi ? "(adj)" : "");
+   Serial.print(" PhAdc=");
+   Serial.print(PH_ADC);
+   Serial.print(" PhSp=");
+   Serial.print(PH_SPREAD);
    Serial.print(" P=");
    Serial.print(paranetOn ? 1 : 0);
    Serial.print(" W=");

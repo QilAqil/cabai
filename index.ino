@@ -22,8 +22,7 @@
  *   - fuzzy_ph    ← pH tanah       → relay pH GPIO27
  *
  * Sensor: DHT22 GPIO4 | soil AO GPIO35 | pH ADC GPIO34, DMS GPIO13
- * Pembacaan tanah & pH bergantian (DMS): tanah saat pH OFF → pH → tanah lagi (rata-rata ADC)
- * Cloud: MQTT topic pertanian/sensor (~10 s) | Supabase tabel pertanian (~60 s)
+ * Cloud: MQTT topic pertanian/sensor (~10 s) | Supabase tabel pertanian (~30 s)
  * Daya: sensor & servo 3,3 V | modul relay 5 V | adaptor 12 V → expansion board
  *
  * Dashboard index.html: skor Tahani centroid; hijau jika >= 0,5 (sama ambang firmware).
@@ -36,7 +35,6 @@
  #include <PubSubClient.h>
  #include <HTTPClient.h>
  #include <ArduinoJson.h>
- #include <time.h>
  
  // ==========================
  // Konfigurasi Sensor DHT22 (AM2302)
@@ -45,7 +43,7 @@
  // Suhu optimal 24-28°C; jalur fuzzy suhu → servo paranet (grafik.py: Rendah/Sedang/Tinggi °C).
  const float TEMP_OPTIMAL_MIN = 24.0f;
  const float TEMP_OPTIMAL_MAX = 28.0f;
- const int DHTPIN  = 22;       // Pin DATA modul DHT22 (GPIO4)
+ const int DHTPIN  = 4;       // Pin DATA modul DHT22 (GPIO4)
  const int DHTTYPE = DHT22;
  DHT dht(DHTPIN, DHTTYPE);
  
@@ -87,16 +85,9 @@
  // - MQTT_PUB_INTERVAL_MS   : berapa sering data dipublish ke broker MQTT (dashboard real-time).
  // - SUPABASE_INTERVAL_MS   : berapa sering data di-insert ke Supabase (log historis).
  const unsigned long MQTT_PUB_INTERVAL_MS = 10UL * 1000UL;
- const unsigned long SUPABASE_INTERVAL_MS = 60UL * 1000UL;
- const unsigned long LOOP_INTERVAL_MS = 10UL * 1000UL; // 1 baris Serial Monitor per 10 detik
+ const unsigned long SUPABASE_INTERVAL_MS = 30UL * 1000UL;
  unsigned long lastMqttPubMs = 0;
  unsigned long lastSupabaseMs = 0;
- 
- // Waktu Serial Monitor via NTP (WIB); fallback uptime jika belum tersinkron.
- const long NTP_GMT_OFFSET_SEC = 7 * 3600;
- const int NTP_DAYLIGHT_OFFSET_SEC = 0;
- const char* NTP_SERVER = "pool.ntp.org";
- bool ntpSynced = false;
  
  // ===========================
  // Konfigurasi Sensor Soil Moisture (modul probe + PCB)
@@ -108,10 +99,6 @@
  const int SOIL_PIN   = 35;   // AO modul soil moisture → ADC
  const int DRY_VALUE  = 3000; // Nilai ADC saat tanah sangat kering (kalibrasi)
  const int WET_VALUE  = 1000; // Nilai ADC saat tanah sangat basah (kalibrasi)
- // Sampling bergantian dengan pH: modul pH OFF (DMS HIGH) saat baca tanah.
- const int SOIL_SAMPLES = 20;
- const unsigned long SOIL_SETTLE_MS = 500UL;   // jeda sebelum sampling tanah (1 wadah 14 cm)
- const unsigned long PH_COOLDOWN_MS = 1000UL; // jeda setelah DMS HIGH sebelum tanah lagi
  
  // LED indikator (biasanya LED built-in di GPIO2):
  // - Dipakai sebagai indikator tanah kering dan status pembacaan pH.
@@ -142,58 +129,12 @@
  // - PH_ADC_PIN: keluaran analog pH → ADC (GPIO34, hanya input).
  // Jika keluaran modul pH sampai 5 V: pasang pembagi 10 kΩ (ke sinyal) + 20 kΩ (ke GND) sebelum GPIO34.
  // Jika keluaran sudah 0–3,3 V: tanpa resistor pembagi.
-const int DMSpin       = 13; // kabel biru
-const int PH_ADC_PIN   = 34; // kabel ungu
-
-// Kalibrasi pH (sama phdeep.ino): ADC 634 -> 8.54, ADC 925 -> 7.00
-const float PH_SLOPE     = -0.005292f;
-const float PH_INTERCEPT = 11.895f;
-const int PH_ADC_MIN     = 450;
-const int PH_ADC_MAX     = 1050;
-const int PH_SPREAD_MAX  = 200;
-// Waktu stabilisasi modul pH (DMS LOW). Turunkan jika sp kecil; naikkan jika pH (off).
-const unsigned long PH_SETTLE_MS = 5000UL; // stabilisasi modul pH (1 wadah 14 cm)
-
-int   PH_ADC;          // nilai ADC mentah untuk pH
-int   PH_SPREAD;       // sebaran ADC (max-min) saat sampling
-float lastReading_pH;  // pH terakhir yang terbaca
-float pH_value;        // nilai pH saat ini
-bool  phProbeTertancap; // probe di tanah & sinyal stabil
-
-static int bacaAdcRata(int pin, int nSamples, int &spread) {
-  long total = 0;
-  int vmin = 4095;
-  int vmax = 0;
-  for (int i = 0; i < nSamples; i++) {
-    int v = analogRead(pin);
-    total += v;
-    if (v < vmin) vmin = v;
-    if (v > vmax) vmax = v;
-    delay(10);
-  }
-  spread = vmax - vmin;
-  return (int)(total / nSamples);
-}
-
-static int bacaPhAdc(int &spread) {
-  return bacaAdcRata(PH_ADC_PIN, 30, spread);
-}
-
-static int bacaSoilAdc(int &spread) {
-  return bacaAdcRata(SOIL_PIN, SOIL_SAMPLES, spread);
-}
-
-static int adcToMoisturePercent(int adc) {
-  int p = map(adc, DRY_VALUE, WET_VALUE, 0, 100);
-  return constrain(p, 0, 100);
-}
-
-static bool probePhDiTanah(int adc, int spread) {
-  if (adc < 350 || adc > 1200 || spread >= 220) {
-    return false;
-  }
-  return (adc >= PH_ADC_MIN && adc <= PH_ADC_MAX && spread <= PH_SPREAD_MAX);
-}
+ const int DMSpin       = 13; // kabel biru
+ const int PH_ADC_PIN   = 34; // kabel ungu
+ 
+ int   PH_ADC;          // nilai ADC mentah untuk pH
+ float lastReading_pH;  // pH terakhir yang terbaca
+ float pH_value;        // nilai pH saat ini
  
  // =============================================================================
  // LOGIKA FUZZY TAHANI (Mamdani, 3 jalur — selaras grafik.py)
@@ -335,36 +276,6 @@ static bool probePhDiTanah(int adc, int spread) {
    }
  }
  
- static void ensureNtpTime() {
-   if (ntpSynced) return;
-   if (WiFi.status() != WL_CONNECTED) return;
- 
-   configTime(NTP_GMT_OFFSET_SEC, NTP_DAYLIGHT_OFFSET_SEC, NTP_SERVER);
-   struct tm timeinfo;
-   for (int i = 0; i < 10; i++) {
-     if (getLocalTime(&timeinfo, 500)) {
-       ntpSynced = true;
-       return;
-     }
-     delay(100);
-   }
- }
- 
- static void printSerialTimestamp() {
-   struct tm timeinfo;
-   if (ntpSynced && getLocalTime(&timeinfo, 0)) {
-     char buf[20];
-     strftime(buf, sizeof(buf), "%H:%M:%S", &timeinfo);
-     Serial.print('[');
-     Serial.print(buf);
-     Serial.print("] ");
-     return;
-   }
-   unsigned long sec = millis() / 1000UL;
-   Serial.printf("[+%02lu:%02lu:%02lu] ",
-                 (sec / 3600UL) % 100, (sec / 60UL) % 60, sec % 60);
- }
- 
  static void ensureMqtt() {
    if (WiFi.status() != WL_CONNECTED) return;
    if (mqttClient.connected()) return;
@@ -442,11 +353,9 @@ static bool probePhDiTanah(int adc, int spread) {
    pinMode(SOIL_PIN, INPUT);
    pinMode(LED_PIN, OUTPUT);
  
-   // Sensor pH tanah (kalibrasi & ADC seperti phdeep.ino)
-   analogReadResolution(12);
-   analogSetAttenuation(ADC_11db);
+    // Sensor pH tanah
    pinMode(DMSpin, OUTPUT);
-   digitalWrite(DMSpin, HIGH);
+   digitalWrite(DMSpin, HIGH); // non-aktifkan DMS di awal
  
    // Servo paranet + relay air / pH
    paranetServo.attach(PARANET_SERVO_PIN);
@@ -459,78 +368,75 @@ static bool probePhDiTanah(int adc, int spread) {
    dht.begin();
  
    ensureWiFi();
-   ensureNtpTime();
    ensureMqtt();
  
    Serial.println("Greenhouse cabai rawit — Fuzzy Tahani (Mamdani) — monitoring IoT");
  }
  
  void loop() {
-   unsigned long loopStartMs = millis();
-
    ensureWiFi();
-   ensureNtpTime();
    ensureMqtt();
    mqttClient.loop();
  
-  // Baca DHT22 (min. ~2 s antar pembacaan disarankan)
-  float h = dht.readHumidity();
-  float t = dht.readTemperature(); // default Celcius
-  bool dhtOk = !(isnan(h) || isnan(t));
-
-  if (!dhtOk) {
-    Serial.println("DHT22 error");
-    h = 0;
-    t = 0;
-  }
-
-  // ===== Pembacaan bergantian: tanah (pH OFF) → pH (DMS ON) → tanah lagi =====
-  // Catatan ADC tanah: nilai KECIL = BASAH, BESAR = KERING.
-
-  // Fase 1 — kelembaban: modul pH tidak mengkondisi probe (DMS HIGH)
-  digitalWrite(DMSpin, HIGH);
-  waitWithMqtt(SOIL_SETTLE_MS);
-  int soilSpread1 = 0;
-  int soilAdc1 = bacaSoilAdc(soilSpread1);
-
-  // Fase 2 — pH: aktifkan kondisioner (DMS LOW), tunggu stabil, sampling
-  digitalWrite(DMSpin, LOW);
-  waitWithMqtt(PH_SETTLE_MS);
-
-  PH_ADC = bacaPhAdc(PH_SPREAD);
-  phProbeTertancap = probePhDiTanah(PH_ADC, PH_SPREAD);
-
-  float pH_raw = 0.0f;
-  if (phProbeTertancap) {
-    pH_raw = (PH_SLOPE * (float)PH_ADC) + PH_INTERCEPT;
-    if (pH_raw < 0.0f || pH_raw > 14.0f) {
-      pH_raw = 0.0f;
-      phProbeTertancap = false;
-    }
-  }
-
-  pH_value = phProbeTertancap ? pH_raw : 0.0f;
-  lastReading_pH = pH_value;
-
-  digitalWrite(DMSpin, HIGH);
-
-  // Fase 3 — kelembaban lagi setelah modul pH mati (rata-rata dengan fase 1)
-  waitWithMqtt(PH_COOLDOWN_MS);
-  int soilSpread2 = 0;
-  int soilAdc2 = bacaSoilAdc(soilSpread2);
-  int soilAdcAvg = (soilAdc1 + soilAdc2) / 2;
-  int moisturePercent = adcToMoisturePercent(soilAdcAvg);
-  int soilSpreadMax = (soilSpread1 > soilSpread2) ? soilSpread1 : soilSpread2;
-
-  if (moisturePercent < DRY_THRESHOLD_PERCENT) {
-    digitalWrite(LED_PIN, HIGH);
-  } else {
-    digitalWrite(LED_PIN, LOW);
-  }
+   // Baca nilai analog (0 - 4095 untuk ESP32)
+   int sensorValue = analogRead(SOIL_PIN);
+ 
+   // Konversi ke persen kelembaban (0–100%)
+   // Catatan: pada banyak sensor, nilai ADC KECIL = tanah BASAH, BESAR = tanah KERING
+   int moisturePercent = map(sensorValue, DRY_VALUE, WET_VALUE, 0, 100);
+   moisturePercent = constrain(moisturePercent, 0, 100);
+ 
+   // Baca DHT22 (min. ~2 s antar pembacaan disarankan; loop sudah jeda panjang karena pH)
+   float h = dht.readHumidity();
+   float t = dht.readTemperature(); // default Celcius
+   bool dhtOk = !(isnan(h) || isnan(t));
+ 
+   if (!dhtOk) {
+     Serial.println("DHT22 error");
+     h = 0;
+     t = 0;
+   }
+ 
+   // Nyalakan LED kalau tanah kering
+   if (moisturePercent < DRY_THRESHOLD_PERCENT) {
+     digitalWrite(LED_PIN, HIGH);  // Tanah kering -> LED ON (butuh disiram)
+   } else {
+     digitalWrite(LED_PIN, LOW);   // Tanah cukup lembab
+   }
+ 
+   // ===== Pembacaan sensor pH tanah (berdasarkan ph.ino) =====
+   // Aktifkan DMS dan LED indikator
+   digitalWrite(DMSpin, LOW);      // aktifkan DMS
+   digitalWrite(LED_PIN, HIGH);    // LED indikator menyala saat pembacaan pH
+   waitWithMqtt(10UL * 1000UL);    // tunggu DMS capture data (10 detik) sambil jaga MQTT
+ 
+   PH_ADC = analogRead(PH_ADC_PIN); 
+ 
+   // Konversi ADC (12-bit) ke skala 10-bit seperti di ph.ino, lalu hitung pH
+   float adc10bit = PH_ADC / 4.0;  // 0–4095 -> ~0–1023
+   float pH_raw = (-0.0233 * adc10bit) + 12.698;  // rumus regresi linier konversi adc ke pH
+ 
+   // Deteksi koneksi sensor pH:
+   // - Soil pH normal kira-kira di 3.0–9.0
+   // - Jika di luar range, besar kemungkinan sensor tidak terhubung / pembacaan tidak valid
+   bool phInSoilRange = (pH_raw >= 3.0f && pH_raw <= 9.0f);
+ 
+   if (phInSoilRange) {
+     pH_value = pH_raw;
+     lastReading_pH = pH_value;
+   } else {
+     // Anggap sensor tidak terhubung / tidak valid
+     pH_value = 0.0f;
+     lastReading_pH = 0.0f;
+   }
+ 
+   // Nonaktifkan DMS dan matikan LED indikator setelah pembacaan pH
+   digitalWrite(DMSpin, HIGH);
+   digitalWrite(LED_PIN, LOW);
  
    // ===== Defuzzifikasi Tahani (centroid 0–1), aktuator ON jika >= RELAY_FUZZY_THRESHOLD =====
    float ph = lastReading_pH;
-   bool phValid = phProbeTertancap && (ph >= 3.0f && ph <= 9.0f);
+   bool phValid = (ph >= 3.0f && ph <= 9.0f);
  
    float scoreParanet = fuzzyParanetFromTemp(t, dhtOk);       // → fuzzy_suhu
    float scoreSoil = fuzzyWaterFromSoil(moisturePercent);    // → fuzzy_soil
@@ -546,7 +452,6 @@ static bool probePhDiTanah(int adc, int spread) {
  
    // ===== Ringkasan singkat ke Serial Monitor (1 baris per loop) =====
    float phRounded = roundf(lastReading_pH * 10.0f) / 10.0f;
-   printSerialTimestamp();
    Serial.print("T=");
    Serial.print(t, 1);
    Serial.print("C H=");
@@ -555,7 +460,6 @@ static bool probePhDiTanah(int adc, int spread) {
    Serial.print(moisturePercent);
    Serial.print("% pH=");
    Serial.print(phRounded, 1);
-   Serial.print(phProbeTertancap ? "" : "(off)");
    Serial.print(" P=");
    Serial.print(paranetOn ? 1 : 0);
    Serial.print(" W=");
@@ -597,9 +501,6 @@ static bool probePhDiTanah(int adc, int spread) {
      supabaseInsert(t, h, moisturePercent, phRounded, scoreParanet, scoreSoil, scorePh,
                     paranetOn, waterOn, phRelayOn);
    }
-
-   unsigned long loopElapsed = millis() - loopStartMs;
-   if (loopElapsed < LOOP_INTERVAL_MS) {
-     waitWithMqtt(LOOP_INTERVAL_MS - loopElapsed);
-   }
+ 
+   waitWithMqtt(3UL * 1000UL); // jeda sebelum pembacaan berikutnya (tetap jaga MQTT)
  }

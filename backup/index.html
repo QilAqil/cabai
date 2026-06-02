@@ -147,7 +147,7 @@ body{
   color:var(--text-muted);
   margin-left:4px;
 }
-/* Baris tiga badge aktuator (blower, air, pH) */
+/* Baris tiga badge aktuator (paranet, air, pH) */
 .relay-row{
   display:flex;
   justify-content:space-between;
@@ -308,7 +308,7 @@ body{
         <div class="card-title">Kontrol Fuzzy Tahani</div>
       </div>
       <div class="metric-row">
-        <div class="metric-label">Suhu → blower</div>
+        <div class="metric-label">Suhu → paranet</div>
         <div class="metric-value">
           <span id="fuzzy_suhu">-</span><span class="metric-unit"> / 1</span>
         </div>
@@ -327,8 +327,8 @@ body{
       </div>
       <div class="relay-row">
         <div class="relay-badge">
-          <span class="relay-label">Blower</span>
-          <span id="blower_badge" class="relay-status off">OFF</span>
+          <span class="relay-label">Servo paranet</span>
+          <span id="paranet_active_badge" class="relay-status off">OFF</span>
         </div>
         <div class="relay-badge">
           <span class="relay-label">Air</span>
@@ -362,7 +362,7 @@ body{
             <th>Tahani Suhu</th>
             <th>Tahani Tanah</th>
             <th>Tahani pH</th>
-            <th>R.Blower</th>
+            <th>R.Par</th>
             <th>R.Air</th>
             <th>R.pH</th>
           </tr>
@@ -481,13 +481,15 @@ client.on("message", function (topic, message) {
   setFuzzyScore("fuzzy_ph", data.fuzzy_ph);
 
   // --- Update badge aktuator ---
-  const blowerOn = relayOn(data.relay_blower);
+  const paranetOn = relayOn(
+    data.relay_paranet != null ? data.relay_paranet : data.paranet_active
+  );
   const relayAir = relayOn(data.relay_air);
   const relayPh = relayOn(data.relay_ph) || relayOn(data.relay_dolomit);
 
-  document.getElementById("blower_badge").innerText = blowerOn ? "ON" : "OFF";
-  document.getElementById("blower_badge").className =
-    "relay-status " + (blowerOn ? "on" : "off");
+  document.getElementById("paranet_active_badge").innerText = paranetOn ? "ON" : "OFF";
+  document.getElementById("paranet_active_badge").className =
+    "relay-status " + (paranetOn ? "on" : "off");
   document.getElementById("relay_air").innerText = relayAir ? "ON" : "OFF";
   document.getElementById("relay_air").className =
     "relay-status " + (relayAir ? "on" : "off");
@@ -625,7 +627,7 @@ async function fetchSupabaseHistory() {
           (r.fuzzy_ph != null ? Number(r.fuzzy_ph).toFixed(2) : "-") +
           "</td>" +
           "<td>" +
-          relayCell(r.relay_blower) +
+          relayCell(r.relay_paranet != null ? r.relay_paranet : r.paranet_active) +
           "</td>" +
           "<td>" +
           relayCell(r.relay_air) +

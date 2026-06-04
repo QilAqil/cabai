@@ -17,7 +17,7 @@
  *   5. Aktuator ON jika skor >= RELAY_FUZZY_THRESHOLD (0,5)
  *
  * Jalur aktuator:
- *   - fuzzy_suhu  ← suhu DHT22     → relay blower GPIO25 (kolom DB relay_blower = flag 0/1)
+ *   - fuzzy_suhu  ← suhu DHT22     → relay blower GPIO21 (kolom DB relay_blower = flag 0/1)
  *   - fuzzy_soil  ← kelembaban %  → relay air GPIO26
  *   - fuzzy_ph    ← pH tanah       → relay pH GPIO27
  *
@@ -210,7 +210,7 @@
  // Konsekuen linguistik pada domain keluaran [0,1]: Rendah / Sedang / Tinggi (intensitas).
  // Skor keluaran = titik berat (centroid) himpunan agregat; aktuator ON jika skor >= 0,5.
  //
- // Jalur 1: suhu → fuzzy_suhu  → relay blower (GPIO25)
+ // Jalur 1: suhu → fuzzy_suhu  → relay blower (GPIO21)
  // Jalur 2: tanah → fuzzy_soil → relay air (GPIO26)
  // Jalur 3: pH → fuzzy_ph → relay pH (GPIO27)
  // =============================================================================

@@ -17,12 +17,13 @@
  *   5. Aktuator ON jika skor >= RELAY_FUZZY_THRESHOLD (0,5)
  *
  * Jalur aktuator:
- *   - fuzzy_suhu  ← suhu DHT22     → servo paranet GPIO21 (kolom DB relay_paranet = flag 0/1)
+ *   - fuzzy_suhu  ← suhu DHT22     → relay blower GPIO25 (kolom DB relay_blower = flag 0/1)
  *   - fuzzy_soil  ← kelembaban %  → relay air GPIO26
  *   - fuzzy_ph    ← pH tanah       → relay pH GPIO27
  *
  * Sensor: DHT22 GPIO4 | soil AO GPIO35 | pH ADC GPIO34, DMS GPIO13
  * 1 wadah: pH dulu → tanah → koreksi bias pH jika probe soil basah (PH_BIAS_WET_SOIL).
+ * Probe pH dicabut: ADC putus/mengambang → ph_valid=0, tampilan "--" (tanpa hold nilai lama).
  * Hardware terbaik: MOSFET matikan VCC modul soil saat baca pH (SOIL_PWR_PIN).
  * Cloud: MQTT topic pertanian/sensor (~10 s) | Supabase tabel pertanian (~30 s)
  * Daya: sensor & servo 3,3 V | modul relay 5 V | adaptor 12 V → expansion board
@@ -31,7 +32,6 @@
  */
 
  #include <DHT.h>
- #include <ESP32Servo.h>
  #include <WiFi.h>
  #include <WiFiClientSecure.h>
  #include <PubSubClient.h>
@@ -42,7 +42,7 @@
  // Konfigurasi Sensor DHT22 (AM2302)
  // ==========================
  // Modul 3 pin (VCC, DATA, GND) dengan PCB — pull-up ~10 kΩ sudah di modul, tanpa resistor ekstra.
- // Suhu optimal 24-28°C; jalur fuzzy suhu → servo paranet (grafik.py: Rendah/Sedang/Tinggi °C).
+// Suhu optimal 24-28°C; jalur fuzzy suhu → relay blower (grafik.py: Rendah/Sedang/Tinggi °C).
  const float TEMP_OPTIMAL_MIN = 24.0f;
  const float TEMP_OPTIMAL_MAX = 28.0f;
  const int DHTPIN  = 4;       // Pin DATA modul DHT22 (GPIO4)
@@ -112,16 +112,12 @@
  // ============
  // Aktuator (hasil Fuzzy Tahani, ambang RELAY_FUZZY_THRESHOLD)
  // ============
- // - Paranet: servo PWM GPIO21, VCC 3,3 V — library "ESP32Servo".
+ // - Blower: relay GPIO21 (aktif-LOW default).
  // - Air & pH: relay VCC 5 V, aktif-LOW (LOW = ON). Set RELAY_ACTIVE_LOW = false jika modul aktif-HIGH.
  const bool RELAY_ACTIVE_LOW = true;
- const int PARANET_SERVO_PIN = 21; // sinyal PWM servo paranet (sesuaikan wiring)
- // Sudut servo (0–180): kalibrasi mekanik roll paranet — boleh dibalik jika arah terbalik.
- const int PARANET_SERVO_ANGLE_OFF = 0;   // suhu rendah / tidak perlu naungan
- const int PARANET_SERVO_ANGLE_ON  = 90; // suhu tinggi / paranet diturunkan (ubah sesuai mekanik)
+ const int RELAY_BLOWER_PIN = 25; // relay blower (kipas)
  const int RELAY_WATER_PIN   = 26; // relay pompa air
  const int RELAY_PH_PIN      = 27; // relay koreksi pH 
- Servo paranetServo;
  
  // Ambang defuzzifikasi Tahani (centroid 0–1) → ON/OFF aktuator
  const float RELAY_FUZZY_THRESHOLD = 0.5f;
@@ -136,10 +132,15 @@
  const int DMSpin       = 13; // kabel biru
  const int PH_ADC_PIN   = 34; // kabel ungu
  const int PH_SAMPLES   = 25;
- const unsigned long PH_SETTLE_MS = 8000UL; // stabilisasi DMS (LOW = aktif)
- const int PH_ADC_MIN   = 200;   // di bawah ini: gangguan / putus
- const int PH_ADC_MAX   = 3800;
- const int PH_SPREAD_MAX = 220;
+ // Stabilisasi DMS setelah LOW (aktif): tunggu PH_SETTLE_MS + flush + 25 sampel (~250 ms).
+ // Total fase baca pH per siklus ≈ 8,3 detik; setelah pasang probe tunggu ≥1 siklus penuh (~13 s).
+ const unsigned long PH_SETTLE_MS = 8000UL;
+ const int PH_ADC_MIN   = 200;   // ADC terlalu rendah (gangguan)
+ const int PH_ADC_MAX   = 3800;  // ADC terlalu tinggi
+ const int PH_ADC_DISCONNECT_LO = 80;   // pin mengambang / probe lepas ke GND
+ const int PH_ADC_DISCONNECT_HI = 4050; // pin mengambang / probe lepas
+ const int PH_SPREAD_MAX = 220;  // spread ADC besar = kabel lepas / noise
+ const uint8_t PH_HOLD_MAX_INVALID = 0; // 0 = tidak tahan nilai lama saat probe dicabut
  // Koreksi software 1 wadah: probe soil basah menaikkan pembacaan pH ~0,5–1,0.
  // Uji: catat pH hanya-probe vs dua-probe, sesuaikan (mis. 8,1→9,0 → set 0,9).
  const float PH_BIAS_WET_SOIL = 0.9f;
@@ -153,9 +154,11 @@
  float pH_value;        // nilai pH saat ini
  bool  phOkSiklus;     // pembacaan siklus ini valid (3–9, ADC wajar)
  bool  phDikoreksi;    // true jika bias 1-wadah diterapkan
+ bool  phTampilValid;  // boleh ditampilkan MQTT/dashboard
  
- static float lastGoodPh = 7.0f;
+ static float lastGoodPh = 0.0f;
  static bool hasLastGoodPh = false;
+ static uint8_t phInvalidStreak = 0;
  
  static void adcFlushPin(int pin, int n) {
    for (int i = 0; i < n; i++) {
@@ -184,9 +187,16 @@
    return (-0.0233f * adc10bit) + 12.698f;
  }
  
+ /** Probe/kabel lepas: ADC mendekati 0 atau 4095, atau sampel sangat berisik. */
+ static bool phProbeTerputus(int adc, int spread) {
+   if (adc <= PH_ADC_DISCONNECT_LO || adc >= PH_ADC_DISCONNECT_HI) return true;
+   if (spread > PH_SPREAD_MAX) return true;
+   return false;
+ }
+ 
  static bool phPembacaanValid(float ph, int adc, int spread) {
+   if (phProbeTerputus(adc, spread)) return false;
    if (adc < PH_ADC_MIN || adc > PH_ADC_MAX) return false;
-   if (spread > PH_SPREAD_MAX) return false;
    return (ph >= 3.0f && ph <= 9.0f);
  }
  
@@ -215,7 +225,7 @@
  // Konsekuen linguistik pada domain keluaran [0,1]: Rendah / Sedang / Tinggi (intensitas).
  // Skor keluaran = titik berat (centroid) himpunan agregat; aktuator ON jika skor >= 0,5.
  //
- // Jalur 1: suhu → fuzzy_suhu  → servo paranet (GPIO21)
+ // Jalur 1: suhu → fuzzy_suhu  → relay blower (GPIO25)
  // Jalur 2: tanah → fuzzy_soil → relay air (GPIO26)
  // Jalur 3: pH → fuzzy_ph → relay pH (GPIO27)
  // =============================================================================
@@ -267,7 +277,7 @@
  }
  
  // -----------------------------------------------------------------------------
- // JALUR 1 — SUHU (DHT22) → fuzzy_suhu → servo paranet
+ // JALUR 1 — SUHU (DHT22) → fuzzy_suhu → relay blower
  // Input μ: trapmf/trimf suhu (grafik.py). Output: intensitas Rendah/Sedang/Tinggi [0,1].
  // IF suhu Rendah  THEN intensitas Rendah  | IF Sedang THEN Sedang | IF Tinggi THEN Tinggi
  // -----------------------------------------------------------------------------
@@ -301,14 +311,6 @@
    float muN = trapmf(ph, 5.5f, 6.0f, 7.0f, 7.5f);
    float muB = trapmf(ph, 7.0f, 7.5f, 9.0f, 9.0f);
    return mamdaniTahaniCentroid(muA, OUT_TINGGI, muN, OUT_RENDAH, muB, OUT_RENDAH);
- }
- 
- /** Servo paranet: OFF/ON dari fuzzy_suhu >= ambang (bukan sudut kontinu). */
- static void paranetServoApply(bool deployed) {
-   int a = deployed ? PARANET_SERVO_ANGLE_ON : PARANET_SERVO_ANGLE_OFF;
-   if (a < 0) a = 0;
-   if (a > 180) a = 180;
-   paranetServo.write(a);
  }
  
  static void relayWrite(int pin, bool on) {
@@ -373,8 +375,8 @@
  
  static bool supabaseInsert(
    float temperature, float humidity, int soil,
-   float ph, float fuzzy_paranet, float fuzzy_soil, float fuzzy_ph,
-   bool paranet_on, bool relay_air, bool relay_ph
+  float ph, float fuzzy_suhu, float fuzzy_soil, float fuzzy_ph,
+  bool blower_on, bool relay_air, bool relay_ph
  ) {
    if (WiFi.status() != WL_CONNECTED) return false;
  
@@ -391,17 +393,16 @@
    http.addHeader("Content-Type", "application/json");
    http.addHeader("Prefer", "return=minimal");
  
-   // Supabase: fuzzy_* = skor centroid Tahani; relay_paranet = flag servo paranet.
+  // Supabase: fuzzy_* = skor centroid Tahani; relay_blower = output fuzzy_suhu.
    String body = "{";
    body += "\"temperature\":" + String(temperature, 2) + ",";
    body += "\"humidity\":" + String(humidity, 2) + ",";
    body += "\"soil\":" + String(soil) + ",";
    body += "\"ph\":" + String(ph, 1) + ",";
-   body += "\"fuzzy_suhu\":" + String(fuzzy_paranet, 2) + ",";
+  body += "\"fuzzy_suhu\":" + String(fuzzy_suhu, 2) + ",";
    body += "\"fuzzy_soil\":" + String(fuzzy_soil, 2) + ",";
    body += "\"fuzzy_ph\":" + String(fuzzy_ph, 2) + ",";
-   // relay_paranet = flag 0/1 servo paranet (nama kolom di DB tetap relay_paranet / float4).
-   body += "\"relay_paranet\":" + String(paranet_on ? 1 : 0) + ",";
+  body += "\"relay_blower\":" + String(blower_on ? 1 : 0) + ",";
    body += "\"relay_air\":" + String(relay_air ? 1 : 0) + ",";
    body += "\"relay_dolomit\":" + String(relay_ph ? 1 : 0);
    body += "}";
@@ -437,9 +438,9 @@
      digitalWrite(SOIL_PWR_PIN, HIGH);
    }
  
-   // Servo paranet + relay air / pH
-   paranetServo.attach(PARANET_SERVO_PIN);
-   paranetServo.write(PARANET_SERVO_ANGLE_OFF);
+  // Relay blower + relay air / pH
+  pinMode(RELAY_BLOWER_PIN, OUTPUT);
+  relayWrite(RELAY_BLOWER_PIN, false);
    pinMode(RELAY_WATER_PIN, OUTPUT);
    pinMode(RELAY_PH_PIN, OUTPUT);
    relayWrite(RELAY_WATER_PIN, false);
@@ -496,13 +497,21 @@
    }
  
    if (phOkSiklus) {
+     phInvalidStreak = 0;
      lastGoodPh = phPakai;
      hasLastGoodPh = true;
      pH_value = phPakai;
-   } else if (hasLastGoodPh) {
-     pH_value = lastGoodPh;
+     phTampilValid = true;
    } else {
-     pH_value = 0.0f;
+     phInvalidStreak++;
+     if (PH_HOLD_MAX_INVALID > 0 && hasLastGoodPh && phInvalidStreak <= PH_HOLD_MAX_INVALID) {
+       pH_value = lastGoodPh;
+       phTampilValid = true;
+     } else {
+       hasLastGoodPh = false;
+       pH_value = 0.0f;
+       phTampilValid = false;
+     }
    }
    lastReading_pH = pH_value;
  
@@ -513,39 +522,46 @@
    }
  
    // ===== Defuzzifikasi Tahani (centroid 0–1), aktuator ON jika >= RELAY_FUZZY_THRESHOLD =====
-   float ph = lastReading_pH;
+   // Kontrol fuzzy/relay hanya dari pembacaan segar yang valid (bukan nilai tahan).
+   float ph = phOkSiklus ? phPakai : 0.0f;
    bool phValid = phOkSiklus && (ph >= 3.0f && ph <= 9.0f);
  
    float scoreParanet = fuzzyParanetFromTemp(t, dhtOk);       // → fuzzy_suhu
    float scoreSoil = fuzzyWaterFromSoil(moisturePercent);    // → fuzzy_soil
    float scorePh = fuzzyPhCorrectionFromPh(ph, phValid);    // → fuzzy_ph
  
-   bool paranetOn = dhtOk && (scoreParanet >= RELAY_FUZZY_THRESHOLD);
+  bool blowerOn = dhtOk && (scoreParanet >= RELAY_FUZZY_THRESHOLD);
    bool waterOn = (scoreSoil >= RELAY_FUZZY_THRESHOLD);
    bool phRelayOn = phValid && (scorePh >= RELAY_FUZZY_THRESHOLD);
  
-   paranetServoApply(paranetOn);
+  relayWrite(RELAY_BLOWER_PIN, blowerOn);
    relayWrite(RELAY_WATER_PIN, waterOn);
    relayWrite(RELAY_PH_PIN, phRelayOn);
  
    // ===== Ringkasan singkat ke Serial Monitor (1 baris per loop) =====
-   float phRounded = roundf(lastReading_pH * 10.0f) / 10.0f;
+   float phRounded = phTampilValid ? roundf(pH_value * 10.0f) / 10.0f : 0.0f;
    Serial.print("T=");
    Serial.print(t, 1);
    Serial.print("C H=");
    Serial.print(h, 0);
    Serial.print("% Soil=");
    Serial.print(moisturePercent);
+   Serial.print("% SoilAdc=");
+   Serial.print(soilAdc);
    Serial.print("% pH=");
-   Serial.print(phRounded, 1);
-   Serial.print(phOkSiklus ? "" : "(hold)");
+   if (phTampilValid) {
+     Serial.print(phRounded, 1);
+   } else {
+     Serial.print("--");
+   }
+   Serial.print(phOkSiklus ? "" : (phTampilValid ? "(hold)" : "(putus)"));
    Serial.print(phDikoreksi ? "(adj)" : "");
    Serial.print(" PhAdc=");
    Serial.print(PH_ADC);
    Serial.print(" PhSp=");
    Serial.print(PH_SPREAD);
    Serial.print(" P=");
-   Serial.print(paranetOn ? 1 : 0);
+  Serial.print(blowerOn ? 1 : 0);
    Serial.print(" W=");
    Serial.print(waterOn ? 1 : 0);
    Serial.print(" H=");
@@ -561,12 +577,13 @@
      doc["temperature"] = t;
      doc["humidity"] = h;
      doc["soil"] = moisturePercent;
-     doc["ph"] = phRounded;
+     doc["ph_valid"] = phTampilValid ? 1 : 0;
+     doc["ph"] = phTampilValid ? phRounded : 0.0f;
      // Skor centroid Tahani 0–1 (index.html, ambang tampilan 0,5)
      doc["fuzzy_suhu"] = scoreParanet;
      doc["fuzzy_soil"] = scoreSoil;
      doc["fuzzy_ph"] = scorePh;
-     doc["relay_paranet"] = paranetOn ? 1 : 0;
+    doc["relay_blower"] = blowerOn ? 1 : 0;
      doc["relay_air"] = waterOn ? 1 : 0;
      doc["relay_ph"] = phRelayOn ? 1 : 0;
      doc["relay_dolomit"] = phRelayOn ? 1 : 0; // kompatibel nama lama = relay koreksi pH
@@ -582,8 +599,10 @@
    // ===== Kirim ke Supabase =====
    if (now - lastSupabaseMs >= SUPABASE_INTERVAL_MS) {
      lastSupabaseMs = now;
-     supabaseInsert(t, h, moisturePercent, phRounded, scoreParanet, scoreSoil, scorePh,
-                    paranetOn, waterOn, phRelayOn);
+     supabaseInsert(t, h, moisturePercent,
+                    phTampilValid ? phRounded : 0.0f,
+                    scoreParanet, scoreSoil, scorePh,
+                    blowerOn, waterOn, phRelayOn);
    }
  
    waitWithMqtt(3UL * 1000UL); // jeda sebelum pembacaan berikutnya (tetap jaga MQTT)

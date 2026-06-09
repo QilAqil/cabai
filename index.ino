@@ -7,7 +7,7 @@
  *   - pH tanah        : 6-7
  *   - Suhu udara      : 24-28°C (DHT22)
  *
- * Kontrol: FUZZY TAHANI (Mamdani), 3 jalur terpisah — selaras grafik.py & index.html
+ * Kontrol: FUZZY TAHANI, 3 jalur terpisah — selaras grafik.py & index.html
  * -------------------------------------------------------------------------
  * Tahapan per jalur:
  *   1. Fuzzifikasi input (μ) — kurva di grafik_fuzzy_input.png
@@ -23,6 +23,7 @@
  *
  * Sensor: DHT22 GPIO4 | soil AO GPIO35 | pH ADC GPIO34, DMS GPIO13
  * 1 wadah: pH dulu → tanah → koreksi bias pH jika probe soil basah (PH_BIAS_WET_SOIL).
+ * Probe pH dicabut: ADC putus/mengambang → ph_valid=0, tampilan "--" (tanpa hold nilai lama).
  * Hardware terbaik: MOSFET matikan VCC modul soil saat baca pH (SOIL_PWR_PIN).
  * Cloud: MQTT topic pertanian/sensor (~10 s) | Supabase tabel pertanian (~30 s)
  * Daya: sensor & servo 3,3 V | modul relay 5 V | adaptor 12 V → expansion board
@@ -103,11 +104,6 @@
  const int SOIL_SAMPLES = 15;
  const unsigned long SOIL_AFTER_PH_MS = 1500UL; // jeda setelah DMS OFF sebelum baca tanah
  
- // LED indikator (biasanya LED built-in di GPIO2):
- // - Dipakai sebagai indikator tanah kering dan status pembacaan pH.
- const int LED_PIN    = 2;
- const int DRY_THRESHOLD_PERCENT = 50; // referensi kering (optimal cabai rawit 50-70%); fuzzy tanah tetap pakai kurva penuh
- 
  // ============
  // Aktuator (hasil Fuzzy Tahani, ambang RELAY_FUZZY_THRESHOLD)
  // ============
@@ -131,10 +127,15 @@
  const int DMSpin       = 13; // kabel biru
  const int PH_ADC_PIN   = 34; // kabel ungu
  const int PH_SAMPLES   = 25;
- const unsigned long PH_SETTLE_MS = 8000UL; // stabilisasi DMS (LOW = aktif)
- const int PH_ADC_MIN   = 200;   // di bawah ini: gangguan / putus
- const int PH_ADC_MAX   = 3800;
- const int PH_SPREAD_MAX = 220;
+ // Stabilisasi DMS setelah LOW (aktif): tunggu PH_SETTLE_MS + flush + 25 sampel (~250 ms).
+ // Total fase baca pH per siklus ≈ 8,3 detik; setelah pasang probe tunggu ≥1 siklus penuh (~13 s).
+ const unsigned long PH_SETTLE_MS = 8000UL;
+ const int PH_ADC_MIN   = 200;   // ADC terlalu rendah (gangguan)
+ const int PH_ADC_MAX   = 3800;  // ADC terlalu tinggi
+ const int PH_ADC_DISCONNECT_LO = 80;   // pin mengambang / probe lepas ke GND
+ const int PH_ADC_DISCONNECT_HI = 4050; // pin mengambang / probe lepas
+ const int PH_SPREAD_MAX = 220;  // spread ADC besar = kabel lepas / noise
+const uint8_t PH_HOLD_MAX_INVALID = 2; // tahan hingga 2 siklus invalid singkat
  // Koreksi software 1 wadah: probe soil basah menaikkan pembacaan pH ~0,5–1,0.
  // Uji: catat pH hanya-probe vs dua-probe, sesuaikan (mis. 8,1→9,0 → set 0,9).
  const float PH_BIAS_WET_SOIL = 0.9f;
@@ -144,13 +145,14 @@
  
  int   PH_ADC;          // nilai ADC mentah untuk pH
  int   PH_SPREAD;       // sebaran sampel ADC pH
- float lastReading_pH;  // pH terakhir yang terbaca
  float pH_value;        // nilai pH saat ini
  bool  phOkSiklus;     // pembacaan siklus ini valid (3–9, ADC wajar)
  bool  phDikoreksi;    // true jika bias 1-wadah diterapkan
+ bool  phTampilValid;  // boleh ditampilkan MQTT/dashboard
  
- static float lastGoodPh = 7.0f;
+ static float lastGoodPh = 0.0f;
  static bool hasLastGoodPh = false;
+ static uint8_t phInvalidStreak = 0;
  
  static void adcFlushPin(int pin, int n) {
    for (int i = 0; i < n; i++) {
@@ -179,9 +181,16 @@
    return (-0.0233f * adc10bit) + 12.698f;
  }
  
+ /** Probe/kabel lepas: ADC mendekati 0 atau 4095, atau sampel sangat berisik. */
+ static bool phProbeTerputus(int adc, int spread) {
+   if (adc <= PH_ADC_DISCONNECT_LO || adc >= PH_ADC_DISCONNECT_HI) return true;
+   if (spread > PH_SPREAD_MAX) return true;
+   return false;
+ }
+ 
  static bool phPembacaanValid(float ph, int adc, int spread) {
+   if (phProbeTerputus(adc, spread)) return false;
    if (adc < PH_ADC_MIN || adc > PH_ADC_MAX) return false;
-   if (spread > PH_SPREAD_MAX) return false;
    return (ph >= 3.0f && ph <= 9.0f);
  }
  
@@ -203,16 +212,7 @@
  }
  
  // =============================================================================
- // LOGIKA FUZZY TAHANI (Mamdani, 3 jalur — selaras grafik.py)
- // =============================================================================
- // Tahapan: fuzzifikasi → aturan IF-THEN → implikasi MIN → agregasi MAX → centroid.
- // Fuzzifikasi: μ(x) seperti fuzzyLow / fuzzyMedium / fuzzyHigh (grafik.py).
- // Konsekuen linguistik pada domain keluaran [0,1]: Rendah / Sedang / Tinggi (intensitas).
- // Skor keluaran = titik berat (centroid) himpunan agregat; aktuator ON jika skor >= 0,5.
- //
- // Jalur 1: suhu → fuzzy_suhu  → relay blower (GPIO25)
- // Jalur 2: tanah → fuzzy_soil → relay air (GPIO26)
- // Jalur 3: pH → fuzzy_ph → relay pH (GPIO27)
+ // LOGIKA FUZZY TAHANI (3 jalur — selaras grafik.py)
  // =============================================================================
  
  static float fminfz(float a, float b) { return (a < b) ? a : b; }
@@ -239,22 +239,32 @@
  
  enum OutKind { OUT_RENDAH = 0, OUT_SEDANG = 1, OUT_TINGGI = 2 };
  
- static float outMuByKind(float y, int kind) {
-   if (kind == OUT_RENDAH) return trapmf(y, 0.0f, 0.0f, 0.15f, 0.45f);
-   if (kind == OUT_SEDANG) return trimf(y, 0.15f, 0.35f, 0.55f);
-   return trapmf(y, 0.45f, 0.65f, 1.0f, 1.0f);
+ // Tabel pencarian untuk keanggotaan output guna mempercepat komputasi (menghilangkan division/math di loop)
+ static float out_mu_table[3][21];
+ static bool table_initialized = false;
+ 
+ static void initFuzzyTable() {
+   for (int i = 0; i <= 20; i++) {
+     float y = (float)i * 0.05f;
+     out_mu_table[OUT_RENDAH][i] = trapmf(y, 0.0f, 0.0f, 0.15f, 0.45f);
+     out_mu_table[OUT_SEDANG][i] = trimf(y, 0.15f, 0.35f, 0.55f);
+     out_mu_table[OUT_TINGGI][i] = trapmf(y, 0.45f, 0.65f, 1.0f, 1.0f);
+   }
+   table_initialized = true;
  }
  
- /** Defuzzifikasi centroid Mamdani/Tahani (implikasi MIN, agregasi MAX). */
- static float mamdaniTahaniCentroid(float mu1, int kind1, float mu2, int kind2, float mu3, int kind3) {
-   const int STEPS = 20;
+ /** Defuzzifikasi centroid Fuzzy Tahani (implikasi MIN, agregasi MAX) yang dioptimalkan dengan tabel pencarian. */
+ static float fuzzyTahaniCentroid(float mu1, int kind1, float mu2, int kind2, float mu3, int kind3) {
+   if (!table_initialized) {
+     initFuzzyTable();
+   }
    float num = 0.0f, den = 0.0f;
-   for (int i = 0; i <= STEPS; i++) {
-     float y = (float)i / (float)STEPS;
+   for (int i = 0; i <= 20; i++) {
+     float y = (float)i * 0.05f; // Menggantikan pembagian berat dengan perkalian konstan
      float agg = 0.0f;
-     agg = fmaxfz(agg, fminfz(mu1, outMuByKind(y, kind1)));
-     agg = fmaxfz(agg, fminfz(mu2, outMuByKind(y, kind2)));
-     agg = fmaxfz(agg, fminfz(mu3, outMuByKind(y, kind3)));
+     agg = fmaxfz(agg, fminfz(mu1, out_mu_table[kind1][i]));
+     agg = fmaxfz(agg, fminfz(mu2, out_mu_table[kind2][i]));
+     agg = fmaxfz(agg, fminfz(mu3, out_mu_table[kind3][i]));
      num += y * agg;
      den += agg;
    }
@@ -263,47 +273,38 @@
  
  // -----------------------------------------------------------------------------
  // JALUR 1 — SUHU (DHT22) → fuzzy_suhu → relay blower
- // Input μ: trapmf/trimf suhu (grafik.py). Output: intensitas Rendah/Sedang/Tinggi [0,1].
- // IF suhu Rendah  THEN intensitas Rendah  | IF Sedang THEN Sedang | IF Tinggi THEN Tinggi
  // -----------------------------------------------------------------------------
  static float fuzzyParanetFromTemp(float tempC, bool tempValid) {
    if (!tempValid) return 0.0f;
    float muR = trapmf(tempC, 0.0f, 0.0f, 24.0f, 27.0f);
    float muS = trimf(tempC, 24.0f, 27.0f, 31.0f);
    float muT = trapmf(tempC, 27.0f, 31.0f, 45.0f, 45.0f);
-   return mamdaniTahaniCentroid(muR, OUT_RENDAH, muS, OUT_SEDANG, muT, OUT_TINGGI);
+   return fuzzyTahaniCentroid(muR, OUT_RENDAH, muS, OUT_SEDANG, muT, OUT_TINGGI);
  }
  
  // -----------------------------------------------------------------------------
  // JALUR 2 — TANAH (%) → fuzzy_soil → relay air
- // IF Kering THEN intensitas Tinggi (butuh siram) | IF Lembab/Basah THEN Rendah
  // -----------------------------------------------------------------------------
  static float fuzzyWaterFromSoil(int moisturePercent) {
    float x = (float)moisturePercent;
    float muK = trapmf(x, 0.0f, 0.0f, 40.0f, 50.0f);
    float muL = trapmf(x, 40.0f, 50.0f, 70.0f, 80.0f);
    float muB = trapmf(x, 70.0f, 80.0f, 100.0f, 100.0f);
-   return mamdaniTahaniCentroid(muK, OUT_TINGGI, muL, OUT_RENDAH, muB, OUT_RENDAH);
+   return fuzzyTahaniCentroid(muK, OUT_TINGGI, muL, OUT_RENDAH, muB, OUT_RENDAH);
  }
  
  // -----------------------------------------------------------------------------
  // JALUR 3 — pH → fuzzy_ph → relay koreksi larutan
- // IF Asam THEN intensitas Tinggi (koreksi) | IF Netral/Basa THEN Rendah
  // -----------------------------------------------------------------------------
  static float fuzzyPhCorrectionFromPh(float ph, bool phValid) {
    if (!phValid) return 0.0f;
    float muA = trapmf(ph, 3.0f, 3.0f, 5.0f, 6.0f);
    float muN = trapmf(ph, 5.5f, 6.0f, 7.0f, 7.5f);
    float muB = trapmf(ph, 7.0f, 7.5f, 9.0f, 9.0f);
-   return mamdaniTahaniCentroid(muA, OUT_TINGGI, muN, OUT_RENDAH, muB, OUT_RENDAH);
+   return fuzzyTahaniCentroid(muA, OUT_TINGGI, muN, OUT_RENDAH, muB, OUT_TINGGI);
  }
  
  static void relayWrite(int pin, bool on) {
-   // Abstraksi kecil untuk menghilangkan kebingungan aktif-LOW vs aktif-HIGH.
-   // - Jika RELAY_ACTIVE_LOW = true:
-   //     on  = true  -> tulis LOW (relay menyala)
-   //     on  = false -> tulis HIGH (relay mati)
-   // - Jika RELAY_ACTIVE_LOW = false (modul aktif-HIGH), kebalikannya.
    if (RELAY_ACTIVE_LOW) {
      digitalWrite(pin, on ? LOW : HIGH);
    } else {
@@ -338,10 +339,7 @@
    if (WiFi.status() != WL_CONNECTED) return;
    if (mqttClient.connected()) return;
  
-   // TLS tanpa verifikasi sertifikat (paling mudah untuk mulai).
-   // Jika Anda punya CA cert EMQX, nanti bisa saya pasangkan agar secure penuh.
    tlsClient.setInsecure();
- 
    mqttClient.setServer(mqtt_server, mqtt_port);
  
    String clientId = "esp32-pertanian-";
@@ -360,39 +358,36 @@
  
  static bool supabaseInsert(
    float temperature, float humidity, int soil,
-  float ph, float fuzzy_suhu, float fuzzy_soil, float fuzzy_ph,
-  bool blower_on, bool relay_air, bool relay_ph
+   float ph, float fuzzy_suhu, float fuzzy_soil, float fuzzy_ph,
+   bool blower_on, bool relay_air, bool relay_ph
  ) {
    if (WiFi.status() != WL_CONNECTED) return false;
  
    HTTPClient http;
    String url = String(supabaseUrl) + "/rest/v1/" + tableName;
-   // Endpoint Supabase:
-   // - Metode    : POST
-   // - URL       : {supabaseUrl}/rest/v1/{tableName}
-   // - Header    : apikey, Authorization, Content-Type, Prefer
-   // - Body JSON : satu objek mewakili satu baris data sensor.
    http.begin(url);
    http.addHeader("apikey", supabaseKey);
    http.addHeader("Authorization", String("Bearer ") + supabaseKey);
    http.addHeader("Content-Type", "application/json");
    http.addHeader("Prefer", "return=minimal");
  
-  // Supabase: fuzzy_* = skor centroid Tahani; relay_blower = output fuzzy_suhu.
-   String body = "{";
-   body += "\"temperature\":" + String(temperature, 2) + ",";
-   body += "\"humidity\":" + String(humidity, 2) + ",";
-   body += "\"soil\":" + String(soil) + ",";
-   body += "\"ph\":" + String(ph, 1) + ",";
-  body += "\"fuzzy_suhu\":" + String(fuzzy_suhu, 2) + ",";
-   body += "\"fuzzy_soil\":" + String(fuzzy_soil, 2) + ",";
-   body += "\"fuzzy_ph\":" + String(fuzzy_ph, 2) + ",";
-  body += "\"relay_blower\":" + String(blower_on ? 1 : 0) + ",";
-   body += "\"relay_air\":" + String(relay_air ? 1 : 0) + ",";
-   body += "\"relay_dolomit\":" + String(relay_ph ? 1 : 0);
-   body += "}";
+   // Menggunakan StaticJsonDocument untuk efisiensi memori RAM dan mencegah fragmentasi heap
+   StaticJsonDocument<384> doc;
+   doc["temperature"] = temperature;
+   doc["humidity"] = humidity;
+   doc["soil"] = soil;
+   doc["ph"] = ph;
+   doc["fuzzy_suhu"] = fuzzy_suhu;
+   doc["fuzzy_soil"] = fuzzy_soil;
+   doc["fuzzy_ph"] = fuzzy_ph;
+   doc["relay_blower"] = blower_on ? 1 : 0;
+   doc["relay_air"] = relay_air ? 1 : 0;
+   doc["relay_dolomit"] = relay_ph ? 1 : 0;
  
-   int code = http.POST(body);
+   char body[384];
+   serializeJson(doc, body, sizeof(body));
+ 
+   int code = http.POST((uint8_t*)body, strlen(body));
  
    http.end();
    return (code >= 200 && code < 300);
@@ -408,7 +403,6 @@
    mqttClient.setKeepAlive(60);
  
    pinMode(SOIL_PIN, INPUT);
-   pinMode(LED_PIN, OUTPUT);
  
    analogReadResolution(12);
    analogSetAttenuation(ADC_11db);
@@ -444,16 +438,31 @@
    ensureMqtt();
    mqttClient.loop();
  
-   // Baca DHT22 (min. ~2 s antar pembacaan disarankan)
-   float h = dht.readHumidity();
-   float t = dht.readTemperature();
-   bool dhtOk = !(isnan(h) || isnan(t));
- 
-   if (!dhtOk) {
-     Serial.println("DHT22 error");
-     h = 0;
-     t = 0;
-   }
+    // Baca DHT22 (min. ~2 s antar pembacaan disarankan)
+    // Stabilisasi dengan filter Exponential Moving Average (EMA) untuk meredam noise
+    static float filtered_t = 26.0f; // Default suhu optimal
+    static float filtered_h = 60.0f; // Default kelembaban optimal
+    static bool dhtInitialized = false;
+
+    float h_raw = dht.readHumidity();
+    float t_raw = dht.readTemperature();
+    bool dhtOk = !(isnan(h_raw) || isnan(t_raw));
+  
+    if (dhtOk) {
+      if (!dhtInitialized) {
+        filtered_t = t_raw;
+        filtered_h = h_raw;
+        dhtInitialized = true;
+      } else {
+        // EMA filter (alpha = 0.15) untuk meredam fluktuasi
+        filtered_t = (0.15f * t_raw) + (0.85f * filtered_t);
+        filtered_h = (0.15f * h_raw) + (0.85f * filtered_h);
+      }
+    } else {
+      Serial.println("DHT22 read error! Menggunakan nilai terfilter terakhir.");
+    }
+    float t = filtered_t;
+    float h = filtered_h;
  
    // ===== pH dulu — matikan VCC soil jika SOIL_PWR_PIN di-wire =====
    phDikoreksi = false;
@@ -462,69 +471,96 @@
    waitWithMqtt(PH_SETTLE_MS);
    adcFlushPin(PH_ADC_PIN, 6);
    PH_ADC = bacaAdcRata(PH_ADC_PIN, PH_SAMPLES, PH_SPREAD);
-   float pH_raw = adcKePh(PH_ADC);
-   phOkSiklus = phPembacaanValid(pH_raw, PH_ADC, PH_SPREAD);
+  float pH_raw = adcKePh(PH_ADC);
+  // Untuk mengurangi false-positive pada batas atas (≈9.0), bulatkan
+  // pH ke 1 desimal sebelum validasi. Contoh: 9.005 -> 9.0
+  float pH_for_check = roundf(pH_raw * 10.0f) / 10.0f;
+  phOkSiklus = phPembacaanValid(pH_for_check, PH_ADC, PH_SPREAD);
  
    digitalWrite(DMSpin, HIGH);
    waitWithMqtt(SOIL_AFTER_PH_MS);
    soilPowerSet(true);
  
-   // ===== Kelembaban tanah =====
-   adcFlushPin(SOIL_PIN, 4);
-   int soilSpread = 0;
-   int soilAdc = bacaAdcRata(SOIL_PIN, SOIL_SAMPLES, soilSpread);
-   int moisturePercent = map(soilAdc, DRY_VALUE, WET_VALUE, 0, 100);
-   moisturePercent = constrain(moisturePercent, 0, 100);
+    // ===== Kelembaban tanah =====
+    adcFlushPin(SOIL_PIN, 4);
+    int soilSpread = 0;
+    int soilAdc = bacaAdcRata(SOIL_PIN, SOIL_SAMPLES, soilSpread);
+    int moisturePercent_raw = map(soilAdc, DRY_VALUE, WET_VALUE, 0, 100);
+    moisturePercent_raw = constrain(moisturePercent_raw, 0, 100);
+
+    // Stabilisasi kelembaban tanah dengan filter EMA (alpha = 0.15)
+    static float filtered_soil = -1.0f;
+    if (filtered_soil < 0.0f) {
+      filtered_soil = (float)moisturePercent_raw;
+    } else {
+      filtered_soil = (0.15f * (float)moisturePercent_raw) + (0.85f * filtered_soil);
+    }
+    int moisturePercent = (int)roundf(filtered_soil);
+    static float filtered_ph = -1.0f;
+    float phPakai = pH_raw;
+    if (phOkSiklus) {
+      float phKoreksi = koreksiPhSatuWadah(pH_raw, moisturePercent, phDikoreksi);
+      if (filtered_ph < 0.0f) {
+        filtered_ph = phKoreksi;
+      } else {
+        // EMA filter (alpha = 0.15) untuk meredam noise pembacaan pH
+        filtered_ph = (0.15f * phKoreksi) + (0.85f * filtered_ph);
+      }
+      phPakai = filtered_ph;
+    }
+  
+    if (phOkSiklus) {
+      phInvalidStreak = 0;
+      lastGoodPh = phPakai;
+      hasLastGoodPh = true;
+      pH_value = phPakai;
+      phTampilValid = true;
+    } else {
+      phInvalidStreak++;
+      if (PH_HOLD_MAX_INVALID > 0 && hasLastGoodPh && phInvalidStreak <= PH_HOLD_MAX_INVALID) {
+        pH_value = lastGoodPh;
+        phTampilValid = true;
+      } else {
+        hasLastGoodPh = false;
+        pH_value = 0.0f;
+        phTampilValid = false;
+      }
+    }
+
+    // ===== Defuzzifikasi Tahani (centroid 0–1), aktuator ON jika >= RELAY_FUZZY_THRESHOLD =====
+    // Kontrol fuzzy/relay menggunakan nilai terfilter yang stabil.
+    float ph = phOkSiklus ? phPakai : 0.0f;
+    bool phValid = phOkSiklus && (ph >= 3.0f && ph <= 9.0f);
  
-   float phPakai = pH_raw;
-   if (phOkSiklus) {
-     phPakai = koreksiPhSatuWadah(pH_raw, moisturePercent, phDikoreksi);
-   }
+    float scoreParanet = fuzzyParanetFromTemp(t, dhtInitialized);       // → fuzzy_suhu (menggunakan validitas dhtInitialized)
+    float scoreSoil = fuzzyWaterFromSoil(moisturePercent);              // → fuzzy_soil
+    float scorePh = fuzzyPhCorrectionFromPh(ph, phValid);              // → fuzzy_ph
  
-   if (phOkSiklus) {
-     lastGoodPh = phPakai;
-     hasLastGoodPh = true;
-     pH_value = phPakai;
-   } else if (hasLastGoodPh) {
-     pH_value = lastGoodPh;
-   } else {
-     pH_value = 0.0f;
-   }
-   lastReading_pH = pH_value;
+    bool blowerOn = dhtInitialized && (scoreParanet >= RELAY_FUZZY_THRESHOLD);
+    bool waterOn = (scoreSoil >= RELAY_FUZZY_THRESHOLD);
+    bool phRelayOn = phValid && (scorePh >= RELAY_FUZZY_THRESHOLD);
  
-   if (moisturePercent < DRY_THRESHOLD_PERCENT) {
-     digitalWrite(LED_PIN, HIGH);
-   } else {
-     digitalWrite(LED_PIN, LOW);
-   }
- 
-   // ===== Defuzzifikasi Tahani (centroid 0–1), aktuator ON jika >= RELAY_FUZZY_THRESHOLD =====
-   float ph = lastReading_pH;
-   bool phValid = phOkSiklus && (ph >= 3.0f && ph <= 9.0f);
- 
-   float scoreParanet = fuzzyParanetFromTemp(t, dhtOk);       // → fuzzy_suhu
-   float scoreSoil = fuzzyWaterFromSoil(moisturePercent);    // → fuzzy_soil
-   float scorePh = fuzzyPhCorrectionFromPh(ph, phValid);    // → fuzzy_ph
- 
-  bool blowerOn = dhtOk && (scoreParanet >= RELAY_FUZZY_THRESHOLD);
-   bool waterOn = (scoreSoil >= RELAY_FUZZY_THRESHOLD);
-   bool phRelayOn = phValid && (scorePh >= RELAY_FUZZY_THRESHOLD);
- 
-  relayWrite(RELAY_BLOWER_PIN, blowerOn);
-   relayWrite(RELAY_WATER_PIN, waterOn);
-   relayWrite(RELAY_PH_PIN, phRelayOn);
+    relayWrite(RELAY_BLOWER_PIN, blowerOn);
+    relayWrite(RELAY_WATER_PIN, waterOn);
+    relayWrite(RELAY_PH_PIN, phRelayOn);
  
    // ===== Ringkasan singkat ke Serial Monitor (1 baris per loop) =====
-   float phRounded = roundf(lastReading_pH * 10.0f) / 10.0f;
+   float phRounded = phTampilValid ? roundf(pH_value * 10.0f) / 10.0f : 0.0f;
    Serial.print("T=");
    Serial.print(t, 1);
    Serial.print("C H=");
    Serial.print(h, 0);
    Serial.print("% Soil=");
    Serial.print(moisturePercent);
+   Serial.print("% SoilAdc=");
+   Serial.print(soilAdc);
    Serial.print("% pH=");
-   Serial.print(phRounded, 1);
-   Serial.print(phOkSiklus ? "" : "(hold)");
+   if (phTampilValid) {
+     Serial.print(phRounded, 1);
+   } else {
+     Serial.print("--");
+   }
+   Serial.print(phOkSiklus ? "" : (phTampilValid ? "(hold)" : "(putus)"));
    Serial.print(phDikoreksi ? "(adj)" : "");
    Serial.print(" PhAdc=");
    Serial.print(PH_ADC);
@@ -547,7 +583,8 @@
      doc["temperature"] = t;
      doc["humidity"] = h;
      doc["soil"] = moisturePercent;
-     doc["ph"] = phRounded;
+     doc["ph_valid"] = phTampilValid ? 1 : 0;
+     doc["ph"] = phTampilValid ? phRounded : 0.0f;
      // Skor centroid Tahani 0–1 (index.html, ambang tampilan 0,5)
      doc["fuzzy_suhu"] = scoreParanet;
      doc["fuzzy_soil"] = scoreSoil;
@@ -568,8 +605,10 @@
    // ===== Kirim ke Supabase =====
    if (now - lastSupabaseMs >= SUPABASE_INTERVAL_MS) {
      lastSupabaseMs = now;
-     supabaseInsert(t, h, moisturePercent, phRounded, scoreParanet, scoreSoil, scorePh,
-                   blowerOn, waterOn, phRelayOn);
+     supabaseInsert(t, h, moisturePercent,
+                    phTampilValid ? phRounded : 0.0f,
+                    scoreParanet, scoreSoil, scorePh,
+                    blowerOn, waterOn, phRelayOn);
    }
  
    waitWithMqtt(3UL * 1000UL); // jeda sebelum pembacaan berikutnya (tetap jaga MQTT)

@@ -307,7 +307,7 @@ body{
       <div class="card-header">
         <div class="card-title">Kontrol Fuzzy Tahani</div>
         <div class="card-sub" style="font-size:12px;color:#666;margin-top:2px">
-          Mamdani · MIN–MAX · centroid 0–1 · ambang aktuator 0,5 (ESP32)
+          Fuzzy Tahani · MIN–MAX · centroid 0–1 · ambang aktuator 0,5 (ESP32)
         </div>
       </div>
       <div class="metric-row">
@@ -473,9 +473,12 @@ client.on("message", function (topic, message) {
   document.getElementById("temp").innerText = data.temperature ?? "-";
   document.getElementById("hum").innerText = data.humidity ?? "-";
   document.getElementById("soil").innerText = data.soil ?? "-";
+  const phOk = data.ph_valid === undefined
+    ? (data.ph != null && Number(data.ph) > 0)
+    : (data.ph_valid === true || data.ph_valid === 1 || data.ph_valid === "1");
   const phVal = data.ph ?? null;
   document.getElementById("ph").innerText =
-    phVal === null || phVal === "-" ? "-" : Number(phVal).toFixed(1);
+    !phOk || phVal === null || phVal === "-" ? "-" : Number(phVal).toFixed(1);
 
   // --- Update skor fuzzy (kompatibel nama lama fuzzy_air) ---
   const fzSuhu = data.fuzzy_suhu != null ? data.fuzzy_suhu : data.fuzzy_air;

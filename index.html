@@ -469,9 +469,12 @@ client.on("message", function (topic, message) {
   const data = JSON.parse(message.toString());
   lastSensorMessageTs = Date.now();
 
-  // --- Update kartu Pembacaan Sensor ---
-  document.getElementById("temp").innerText = data.temperature ?? "-";
-  document.getElementById("hum").innerText = data.humidity ?? "-";
+  const tempVal = data.temperature ?? null;
+  document.getElementById("temp").innerText =
+    tempVal === null || tempVal === "-" ? "-" : Number(tempVal).toFixed(1);
+  const humVal = data.humidity ?? null;
+  document.getElementById("hum").innerText =
+    humVal === null || humVal === "-" ? "-" : Number(humVal).toFixed(1);
   document.getElementById("soil").innerText = data.soil ?? "-";
   const phOk = data.ph_valid === undefined
     ? (data.ph != null && Number(data.ph) > 0)
@@ -613,7 +616,7 @@ async function fetchSupabaseHistory() {
           (r.temperature != null ? Number(r.temperature).toFixed(1) : "-") +
           "</td>" +
           "<td>" +
-          (r.humidity != null ? Number(r.humidity).toFixed(0) : "-") +
+          (r.humidity != null ? Number(r.humidity).toFixed(1) : "-") +
           "</td>" +
           "<td>" +
           (r.soil != null ? r.soil : "-") +

@@ -463,7 +463,8 @@
     static int phSpread = 0;
     PH_ADC = bacaAdcRata(PH_ADC_PIN, PH_SAMPLES, phSpread);
     float pH_raw = adcKePh(PH_ADC);
-    if (pH_raw > 9.0f || pH_raw < 0.0f) pH_raw = 0.0f; // Batasi maksimal 9.0
+    if (pH_raw > 9.0f) pH_raw = 9.0f; // Batasi maksimal ke 9.0 agar tidak terputus
+    if (pH_raw < 3.0f) pH_raw = 3.0f; // Batasi minimal ke 3.0
     phOkSiklus = phPembacaanValid(pH_raw, PH_ADC, phSpread);
     
     // Segera matikan DMS untuk mencegah pembacaan naik perlahan (polarisasi)

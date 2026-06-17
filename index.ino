@@ -375,9 +375,9 @@
    doc["fuzzy_suhu"] = fuzzy_suhu;
    doc["fuzzy_soil"] = fuzzy_soil;
    doc["fuzzy_ph"] = fuzzy_ph;
-   doc["relay_blower"] = blower_on ? 1 : 0;
+   doc["relay_kipas"] = blower_on ? 1 : 0;
    doc["relay_air"] = relay_air ? 1 : 0;
-   doc["relay_dolomit"] = relay_ph ? 1 : 0;
+   doc["relay_ph"] = relay_ph ? 1 : 0;
  
    char body[384];
    serializeJson(doc, body, sizeof(body));
@@ -595,10 +595,9 @@
      doc["fuzzy_suhu"] = scoreParanet;
      doc["fuzzy_soil"] = scoreSoil;
      doc["fuzzy_ph"] = scorePh;
-    doc["relay_blower"] = blowerOn ? 1 : 0;
+     doc["relay_kipas"] = blowerOn ? 1 : 0;
      doc["relay_air"] = waterOn ? 1 : 0;
      doc["relay_ph"] = phRelayOn ? 1 : 0;
-     doc["relay_dolomit"] = phRelayOn ? 1 : 0; // kompatibel nama lama = relay koreksi pH
      doc["wifi_connected"] = wifiConnectedFlag ? 1 : 0;
      doc["wifi_ip"] = wifiIp;
      doc["temp_optimal"] = (t >= TEMP_OPTIMAL_MIN && t <= TEMP_OPTIMAL_MAX) ? 1 : 0;

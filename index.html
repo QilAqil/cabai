@@ -330,8 +330,8 @@ body{
       </div>
       <div class="relay-row">
         <div class="relay-badge">
-          <span class="relay-label">Blower</span>
-          <span id="blower_badge" class="relay-status off">OFF</span>
+          <span class="relay-label">Kipas</span>
+          <span id="kipas_badge" class="relay-status off">OFF</span>
         </div>
         <div class="relay-badge">
           <span class="relay-label">Air</span>
@@ -365,7 +365,7 @@ body{
             <th>Tahani Suhu</th>
             <th>Tahani Tanah</th>
             <th>Tahani pH</th>
-            <th>R.Blower</th>
+            <th>R.Kipas</th>
             <th>R.Air</th>
             <th>R.pH</th>
           </tr>
@@ -490,13 +490,13 @@ client.on("message", function (topic, message) {
   setFuzzyScore("fuzzy_ph", data.fuzzy_ph);
 
   // --- Update badge aktuator ---
-  const blowerOn = relayOn(data.relay_blower);
+  const kipasOn = relayOn(data.relay_kipas);
   const relayAir = relayOn(data.relay_air);
-  const relayPh = relayOn(data.relay_ph) || relayOn(data.relay_dolomit);
+  const relayPh = relayOn(data.relay_ph);
 
-  document.getElementById("blower_badge").innerText = blowerOn ? "ON" : "OFF";
-  document.getElementById("blower_badge").className =
-    "relay-status " + (blowerOn ? "on" : "off");
+  document.getElementById("kipas_badge").innerText = kipasOn ? "ON" : "OFF";
+  document.getElementById("kipas_badge").className =
+    "relay-status " + (kipasOn ? "on" : "off");
   document.getElementById("relay_air").innerText = relayAir ? "ON" : "OFF";
   document.getElementById("relay_air").className =
     "relay-status " + (relayAir ? "on" : "off");
@@ -634,13 +634,13 @@ async function fetchSupabaseHistory() {
           (r.fuzzy_ph != null ? Number(r.fuzzy_ph).toFixed(2) : "-") +
           "</td>" +
           "<td>" +
-          relayCell(r.relay_blower) +
+          relayCell(r.relay_kipas) +
           "</td>" +
           "<td>" +
           relayCell(r.relay_air) +
           "</td>" +
           "<td>" +
-          relayCell(r.relay_dolomit) +
+          relayCell(r.relay_ph) +
           "</td>" +
           "</tr>"
         );

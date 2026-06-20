@@ -481,7 +481,7 @@ client.on("message", function (topic, message) {
     : (data.ph_valid === true || data.ph_valid === 1 || data.ph_valid === "1");
   const phVal = data.ph ?? null;
   document.getElementById("ph").innerText =
-    !phOk || phVal === null || phVal === "-" ? "-" : Number(phVal).toFixed(1);
+    !phOk || phVal === null || phVal === "-" ? "0.0" : Number(phVal).toFixed(1);
 
   // --- Update skor fuzzy (kompatibel nama lama fuzzy_air) ---
   const fzSuhu = data.fuzzy_suhu != null ? data.fuzzy_suhu : data.fuzzy_air;

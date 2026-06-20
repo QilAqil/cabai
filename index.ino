@@ -179,7 +179,9 @@
  
  static float adcKePh(int adc) {
    float adc10bit = (float)adc / 4.0f;
-   return (-0.0233f * adc10bit) + 12.698f;
+   // Kalibrasi ulang berdasarkan hasil uji cuka:
+   // Cuka manual 4.0, tetapi sensor baca 5.0 -> Offset dikurangi 1.0
+   return (-0.0233f * adc10bit) + 11.698f;
  }
  
   static bool phPembacaanValid(float ph, int adc, int spread) {
@@ -384,6 +386,13 @@
  
    int code = http.POST((uint8_t*)body, strlen(body));
  
+   if (code < 200 || code >= 300) {
+     Serial.print("Supabase POST Error: ");
+     Serial.print(code);
+     Serial.print(" - ");
+     Serial.println(http.getString());
+   }
+ 
    http.end();
    return (code >= 200 && code < 300);
  }
@@ -489,8 +498,8 @@
       moisturePercent = map(soilAdc, DRY_VALUE - 100, WET_VALUE, 0, 100);
       moisturePercent = constrain(moisturePercent, 0, 100);
     }
-
-    // (Kondisi moisturePercent < 5 dihapus agar sensor pH dapat dites secara independen tanpa harus membasahi sensor soil)
+    
+    // (Kondisi moisturePercent < 5 dihapus kembali agar sensor pH tidak putus secara sepihak saat tanah sedang sangat kering)
 
     static float filtered_ph = -1.0f;
     float phPakai = pH_raw;

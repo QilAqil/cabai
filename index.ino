@@ -396,6 +396,20 @@
    http.end();
    return (code >= 200 && code < 300);
  }
+
+ String getTimeStr() {
+   struct tm timeinfo;
+   if (!getLocalTime(&timeinfo, 10)) {
+     // Jika belum dapat jam internet, gunakan hitungan waktu hidup alat
+     unsigned long s = millis() / 1000;
+     char buf[16];
+     sprintf(buf, "[%02lu:%02lu:%02lu]", (s / 3600), (s / 60) % 60, s % 60);
+     return String(buf);
+   }
+   char buf[32];
+   strftime(buf, sizeof(buf), "[%H:%M:%S]", &timeinfo);
+   return String(buf);
+ }
  
  void setup() {
    Serial.begin(115200);
@@ -433,6 +447,7 @@
    dht.begin();
  
    ensureWiFi();
+   configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov"); // Sinkronisasi jam internet (WIB = GMT+7)
    ensureMqtt();
  
    Serial.println("Greenhouse cabai rawit");
@@ -561,7 +576,8 @@
  
    // ===== Ringkasan singkat ke Serial Monitor (1 baris per loop) =====
    float phRounded = phTampilValid ? roundf(pH_value * 10.0f) / 10.0f : 0.0f;
-   Serial.print("T=");
+   Serial.print(getTimeStr());
+   Serial.print(" T=");
    Serial.print(t, 1);
    Serial.print("C H=");
    Serial.print(h, 0);

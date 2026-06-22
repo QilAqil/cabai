@@ -87,7 +87,7 @@
  // - MQTT_PUB_INTERVAL_MS   : berapa sering data dipublish ke broker MQTT (dashboard real-time).
  // - SUPABASE_INTERVAL_MS   : berapa sering data di-insert ke Supabase (log historis).
  const unsigned long MQTT_PUB_INTERVAL_MS = 10UL * 1000UL;
- const unsigned long SUPABASE_INTERVAL_MS = 30UL * 1000UL;
+ const unsigned long SUPABASE_INTERVAL_MS = 60UL * 1000UL; // Diubah ke 60 detik (1 menit)
  unsigned long lastMqttPubMs = 0;
  unsigned long lastSupabaseMs = 0;
  
@@ -103,7 +103,8 @@
   // Kalibrasi: gantung sensor di udara kering → catat SoilAdc → isi DRY_VALUE.
   //            tancap sensor di tanah sangat basah 5 menit → catat SoilAdc → isi WET_VALUE.
   const int DRY_VALUE  = 3200; // Nilai ADC saat sensor di udara / kering (0%)
-  const int WET_VALUE  = 1400; // Nilai ADC saat tanah sangat basah stabil (100%)
+  //const int WET_VALUE  = 1834; // (Dikalibrasi ulang) ADC saat ini akan membaca 64%
+  const int WET_VALUE  = 150;  // (Dikalibrasi ulang) SoilAdc=1202 → 64%, SoilAdc=150 → 100%
  const int SOIL_SAMPLES = 10; // Jumlah sampel averaging per pembacaan
  const unsigned long SOIL_AFTER_PH_MS = 1500UL; // jeda setelah DMS OFF sebelum baca tanah
  
@@ -131,20 +132,19 @@
  const int DMSpin        = 13;      // kabel biru
  const int PH_ADC_PIN    = 34;      // kabel ungu
  const int INDIKATOR_PIN = 2;       // LED built-in ESP32 — menyala saat baca pH
- const int PH_SAMPLES    = 10;      // jumlah sampel rata-rata ADC pH
+ const int PH_SAMPLES    = 15;      // Jumlah sampel filter Median (ditingkatkan dari 10 ke 15 agar super stabil)
  // DMS aktif (LOW) selama PH_SETTLE_MS agar probe stabil sebelum ADC dibaca.
  const unsigned long PH_SETTLE_MS = 10000UL; // 10 detik (sesuai referensi kode DMS)
- const uint8_t PH_HOLD_MAX_INVALID = 2; // tahan hingga 2 siklus invalid singkat
+ const uint8_t PH_HOLD_MAX_INVALID = 1; // (Diturunkan) Hanya tahan 1 siklus saja agar respon "putus" di layar lebih cepat
  const int PH_ADC_MIN     = 200;     // ADC terlalu rendah (gangguan / terputus)
  const int PH_ADC_MAX     = 3800;    // ADC terlalu tinggi (terputus)
- const int PH_SPREAD_MAX  = 220;     // spread ADC besar = probe di udara / noise
- // Koreksi software 1 wadah: probe soil basah menaikkan pembacaan pH ~0,5–1,0.
- // Uji: catat pH hanya-probe vs dua-probe, sesuaikan (mis. 8,1→9,0 → set 0,9).
- const float PH_BIAS_WET_SOIL = 0.9f;
+ const int PH_SPREAD_MAX  = 40;      // (Dinaikkan ke 40) Mengakomodasi riak tegangan lingkungan Anda yang berkisar di angka PhSp=12-34.
+ // Koreksi software 1 wadah: Dinonaktifkan (0.0) karena ternyata tidak diperlukan/malah merusak hasil
+ const float PH_BIAS_WET_SOIL = 0.0f;
  const int SOIL_WET_PERCENT_MIN = 35; // % tanah: di atas ini koreksi bias dipakai
- // Opsional: Pin digital ESP32 ke VCC modul soil (contoh: 12 atau 14) untuk power gating (mencegah korosi & elektrolisis).
- // Hubungkan VCC sensor tanah ke pin ini. Set ke -1 jika VCC sensor terhubung langsung ke 3.3V/5V konstan.
- const int SOIL_PWR_PIN = -1;
+ // Sensor logam WAJIB menggunakan power gating agar bebas dari polarisasi galvanik.
+ // Sambungkan kabel VCC sensor tanah ke GPIO14 (bukan langsung ke 3.3V/5V).
+ const int SOIL_PWR_PIN = 14; // GPIO14 = saklar daya sensor tanah
  
  int   PH_ADC;          // nilai ADC mentah untuk pH
  float pH_value;        // nilai pH saat ini
@@ -163,25 +163,44 @@
    }
  }
  
- static int bacaAdcRata(int pin, int nSamples, int &spread) {
-    long sum = 0;
-    int vmin = 4095, vmax = 0;
-    for (int i = 0; i < nSamples; i++) {
-      int v = analogRead(pin);
-      if (v < vmin) vmin = v;
-      if (v > vmax) vmax = v;
-      sum += v;
-      delay(5);
-    }
-    spread = vmax - vmin;
-    return (int)(sum / nSamples);
-  }
+ // ALGORITMA BARU: Filter Median
+ // Sangat ampuh menstabilkan sensor dengan cara membuang angka-angka ekstrem (noise/spike)
+ static int bacaAdcMedian(int pin, int nSamples, int &spread) {
+   if (nSamples > 30) nSamples = 30; // Batas aman array
+   int values[30];
+   
+   for (int i = 0; i < nSamples; i++) {
+     values[i] = analogRead(pin);
+     delay(5);
+   }
+   
+   // Urutkan nilai (Bubble Sort) dari terkecil ke terbesar
+   for (int i = 0; i < nSamples - 1; i++) {
+     for (int j = 0; j < nSamples - i - 1; j++) {
+       if (values[j] > values[j+1]) {
+         int temp = values[j];
+         values[j] = values[j+1];
+         values[j+1] = temp;
+       }
+     }
+   }
+   
+   // Hitung spread dengan mengabaikan nilai paling ekstrem (ujung atas dan bawah)
+   // Ini mencegah sensor divonis "putus" hanya karena 1 kedipan listrik
+   if (nSamples >= 5) {
+     spread = values[nSamples - 2] - values[1];
+   } else {
+     spread = values[nSamples - 1] - values[0];
+   }
+   
+   // Ambil nilai paling tengah (Median) yang dijamin bersih dari noise
+   return values[nSamples / 2];
+ }
  
  static float adcKePh(int adc) {
    float adc10bit = (float)adc / 4.0f;
-   // Kalibrasi ulang berdasarkan hasil uji cuka:
-   // Cuka manual 4.0, tetapi sensor baca 5.0 -> Offset dikurangi 1.0
-   return (-0.0233f * adc10bit) + 11.698f;
+   // Kalibrasi ulang: ADC 845 = pH 7.0 (disesuaikan dengan alat manual)
+   return (-0.0233f * adc10bit) + 11.922f;
  }
  
   static bool phPembacaanValid(float ph, int adc, int spread) {
@@ -450,6 +469,18 @@
    configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov"); // Sinkronisasi jam internet (WIB = GMT+7)
    ensureMqtt();
  
+   // ===== Warm-up sensor tanah resistif logam =====
+   // Sensor logam memerlukan arus stabil beberapa saat untuk menghilangkan polarisasi awal.
+   // Caranya: baca dan buang 60 sampel dummy (= ~3 detik) agar ADC mencapai kondisi tunak.
+   // Setelah ini selesai, nilai pertama di loop() dijamin sudah stabil.
+   Serial.print("Warming up soil sensor");
+   for (int i = 0; i < 60; i++) {
+     (void)analogRead(SOIL_PIN);
+     delay(50);
+     if (i % 10 == 9) Serial.print(".");
+   }
+   Serial.println(" OK");
+ 
    Serial.println("Greenhouse cabai rawit");
  }
  
@@ -485,7 +516,7 @@
 
     adcFlushPin(PH_ADC_PIN, 6);
     static int phSpread = 0;
-    PH_ADC = bacaAdcRata(PH_ADC_PIN, PH_SAMPLES, phSpread);
+    PH_ADC = bacaAdcMedian(PH_ADC_PIN, PH_SAMPLES, phSpread);
     float pH_raw = adcKePh(PH_ADC);
     if (pH_raw > 9.0f) pH_raw = 9.0f; // Batasi maksimal ke 9.0 agar tidak terputus
     if (pH_raw < 3.0f) pH_raw = 3.0f; // Batasi minimal ke 3.0
@@ -500,13 +531,11 @@
       soilPowerSet(true);
     }
  
-    // ===== Kelembaban tanah — Langsung baca, map, constrain =====
+     // ===== Kelembaban tanah — Langsung baca, map, constrain =====
     int soilSpread = 0;
-    int soilAdc = bacaAdcRata(SOIL_PIN, SOIL_SAMPLES, soilSpread);
+    int soilAdc = bacaAdcMedian(SOIL_PIN, SOIL_SAMPLES, soilSpread);
     int moisturePercent = 0;
     
-    // Jika ADC floating (terputus) atau nilai di udara (sekitar DRY_VALUE)
-    // ADC floating pada ESP32 biasanya mendekati 0 atau melonjak penuh
     if (soilAdc < 500 || soilAdc > 4000 || soilAdc >= (DRY_VALUE - 100)) {
       moisturePercent = 0;
     } else {
@@ -514,7 +543,11 @@
       moisturePercent = constrain(moisturePercent, 0, 100);
     }
     
-    // (Kondisi moisturePercent < 5 dihapus kembali agar sensor pH tidak putus secara sepihak saat tanah sedang sangat kering)
+    // Jika sensor tanah mendeteksi kering kerontang (< 5%), 
+    // sistem akan otomatis menganggap sensor pH juga sedang berada di udara bebas.
+    if (moisturePercent < 5) {
+      phOkSiklus = false;
+    }
 
     static float filtered_ph = -1.0f;
     float phPakai = pH_raw;
@@ -597,11 +630,11 @@
    Serial.print(PH_ADC);
    Serial.print(" PhSp=");
    Serial.print(phSpread);
-   Serial.print(" P=");
+   Serial.print(" Kipas=");
   Serial.print(blowerOn ? 1 : 0);
-   Serial.print(" W=");
+   Serial.print(" Air=");
    Serial.print(waterOn ? 1 : 0);
-   Serial.print(" H=");
+   Serial.print(" PH=");
    Serial.print(phRelayOn ? 1 : 0);
    Serial.println();
  

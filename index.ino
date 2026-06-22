@@ -536,7 +536,11 @@
     int soilAdc = bacaAdcMedian(SOIL_PIN, SOIL_SAMPLES, soilSpread);
     int moisturePercent = 0;
     
-    if (soilAdc < 500 || soilAdc > 4000 || soilAdc >= (DRY_VALUE - 100)) {
+     // Deteksi sensor dicabut: 
+    // 1. ADC terlalu rendah/tinggi → floating/short
+    // 2. SoilAdc >= DRY_VALUE → sensor di udara kering
+    // 3. soilSpread > 150 → ADC pin mengambang (floating) → nilai acak
+    if (soilAdc < 500 || soilAdc > 4000 || soilAdc >= (DRY_VALUE - 100) || soilSpread > 150) {
       moisturePercent = 0;
     } else {
       moisturePercent = map(soilAdc, DRY_VALUE - 100, WET_VALUE, 0, 100);

@@ -1,376 +1,237 @@
 <!DOCTYPE html>
-<!-- Deklarasi dokumen HTML5 -->
-<!-- Dashboard greenhouse cabai rawit — MQTT real-time + riwayat Supabase -->
-<html>
+<!-- Menentukan bahwa dokumen ini menggunakan standar HTML5 -->
+<html lang="id">
+<!-- lang="id" : Menentukan bahasa dokumen sebagai Bahasa Indonesia -->
+
 <head>
-  <!-- Meta: encoding UTF-8 agar karakter Indonesia tampil benar -->
+<!-- Bagian konfigurasi halaman: encoding, viewport, judul, dan library -->
+
+  <!-- Menentukan encoding karakter UTF-8, mendukung karakter dan simbol -->
   <meta charset="UTF-8">
-  <!-- Meta: viewport agar layout responsif di HP/tablet -->
+
+  <!-- Memastikan halaman tampil responsif di berbagai perangkat -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <!-- Judul yang muncul di tab browser -->
-  <title>Dashboard Greenhouse Cabai Rawit</title>
+  <!-- Judul halaman yang muncul di tab browser -->
+  <title>Greenhouse Cabai Rawit</title>
 
-  <!-- Library mqtt.js dari CDN — klien MQTT di browser (WebSocket) -->
+  <!-- Mengimpor library mqtt.js dari CDN untuk koneksi MQTT via WebSocket -->
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 
-  <!-- ===================== CSS DASHBOARD ===================== -->
   <style>
-/* --- Variabel tema (mudah diubah warna global) --- */
-:root{
-  --primary:#9CD5FF;       /* warna aksen utama */
-  --primary-dark:#5aa6d4;  /* aksen lebih gelap */
-  --bg:#e9f5ff;             /* latar sekunder */
-  --card-bg:#ffffff;        /* latar kartu putih */
-  --text-main:#123047;      /* teks utama */
-  --text-muted:#5b6b7a;     /* teks sekunder / label */
-}
-/* Reset: hilangkan margin/padding default browser */
-*{
-  box-sizing:border-box;     /* padding/border masuk hitungan lebar */
-  margin:0;
-  padding:0;
-}
-body{
-  font-family: Arial, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: radial-gradient(circle at top, #c9e8ff 0, #9CD5FF 20%, #e9f5ff 60%, #ffffff 100%);
-  min-height:100vh;          /* minimal tinggi = tinggi layar */
-  display:flex;
-  align-items:center;        /* vertikal tengah */
-  justify-content:center;    /* horizontal tengah */
-  padding:16px;              /* jarak tepi layar */
-  color:var(--text-main);
-}
-/* Pembungkus: batasi lebar maks dashboard */
-.wrapper{
-  width:100%;
-  max-width:960px;
-}
-/* Area judul halaman */
-.header{
-  text-align:left;
-  margin-bottom:16px;
-}
-.title{
-  font-size:1.6rem;
-  font-weight:700;
-  color:var(--text-main);
-}
-.header-top{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:12px;
-  flex-wrap:wrap;
-}
-.conn-group{
-  display:flex;
-  align-items:center;
-  gap:10px;
-  flex-wrap:wrap;
-  font-size:0.78rem;
-}
-.conn-detail{
-  color:var(--text-muted);
-  line-height:1.4;
-}
-.conn-detail .conn-val{
-  font-weight:600;
-  color:var(--text-main);
-}
-.conn-detail .conn-val.ok{ color:#0c7a24; }
-.conn-detail .conn-val.err{ color:#a01111; }
-/* Grid 2 kolom: kartu sensor + kartu fuzzy (auto-fit di layar sempit) */
-.grid{
-  display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
-  gap:16px;
-}
-/* Gaya kotak kartu umum */
-.card{
-  background:var(--card-bg);
-  border-radius:16px;
-  padding:18px 18px 16px;
-  box-shadow:0 10px 25px rgba(0,0,0,0.06);
-  border:1px solid rgba(0,0,0,0.03);
-}
-/* Baris judul di dalam kartu (kiri judul, kanan badge opsional) */
-.card-header{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  margin-bottom:10px;
-}
-.card-title{
-  font-size:0.95rem;
-  font-weight:600;
-  color:var(--text-main);
-}
-/* Badge status kecil (pill) */
-.pill{
-  padding:4px 10px;
-  border-radius:999px;
-  font-size:0.7rem;
-  font-weight:600;
-  letter-spacing:0.04em;
-  text-transform:uppercase;
-  background:rgba(0,0,0,0.04);
-  color:var(--text-muted);
-}
-.pill.ok{                    /* hijau = sukses / terhubung */
-  background:rgba(0,150,0,0.08);
-  color:#0c7a24;
-}
-.pill.err{                   /* merah = gagal / putus */
-  background:rgba(200,0,0,0.08);
-  color:#a01111;
-}
-/* Satu baris metrik: label kiri, nilai kanan */
-.metric-row{
-  display:flex;
-  justify-content:space-between;
-  align-items:baseline;
-  margin:4px 0;
-}
-.metric-label{
-  font-size:0.8rem;
-  color:var(--text-muted);
-}
-.metric-value{
-  font-size:1.1rem;
-  font-weight:600;
-  color:var(--text-main);
-}
-.metric-unit{
-  font-size:0.8rem;
-  color:var(--text-muted);
-  margin-left:4px;
-}
-/* Baris tiga badge aktuator (blower, air, pH) */
-.relay-row{
-  display:flex;
-  justify-content:space-between;
-  gap:6px;
-  margin-top:8px;
-  flex-wrap:wrap;
-}
-.relay-badge{
-  flex:1;
-  min-width:88px;
-  margin:0;
-  padding:8px 10px;
-  border-radius:10px;
-  font-size:0.8rem;
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  background:rgba(0,0,0,0.02);
-}
-.relay-label{
-  color:var(--text-muted);
-}
-.relay-status{
-  font-weight:700;
-}
-.relay-status.on{            /* aktuator ON */
-  color:#0c7a24;
-}
-.relay-status.off{           /* aktuator OFF */
-  color:#a01111;
-}
-/* Kartu riwayat Supabase (di bawah grid) */
-.history-card{
-  margin-top:16px;
-}
-.history-head{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:12px;
-  flex-wrap:wrap;
-  margin-bottom:10px;
-}
-.btn-refresh{                /* tombol muat ulang tabel */
-  font-size:0.75rem;
-  padding:6px 12px;
-  border-radius:8px;
-  border:1px solid rgba(0,0,0,0.12);
-  background:#fff;
-  color:var(--text-main);
-  cursor:pointer;
-}
-.btn-refresh:hover{
-  background:rgba(156,213,255,0.35);
-}
-.table-wrap{                 /* scroll horizontal jika tabel lebar */
-  overflow-x:auto;
-  border-radius:10px;
-  border:1px solid rgba(0,0,0,0.06);
-}
-.history-table{
-  width:100%;
-  border-collapse:collapse;
-  font-size:0.72rem;
-}
-.history-table th,
-.history-table td{
-  padding:8px 10px;
-  text-align:left;
-  border-bottom:1px solid rgba(0,0,0,0.06);
-  white-space:nowrap;
-}
-.history-table th{
-  color:var(--text-muted);
-  font-weight:600;
-  background:rgba(0,0,0,0.02);
-}
-.history-table tbody tr:hover{
-  background:rgba(156,213,255,0.12);
-}
-.history-empty{              /* sel pesan kosong / error */
-  padding:12px;
-  font-size:0.8rem;
-  color:var(--text-muted);
-  text-align:center;
-}
-.fuzzy-high{                 /* skor fuzzy ≥ 0,5 (selaras index.ino) */
-  color:#0c7a24;
-}
-.fuzzy-low{                  /* skor fuzzy < 0,5 */
-  color:var(--text-main);
-}
-/* Responsif: layar ≤ 600px */
-@media (max-width:600px){
-  .title{
-    font-size:1.3rem;
+  /* Reset universal: menghilangkan margin dan padding default browser */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* body: latar gradien biru, font Segoe UI, padding tepi layar */
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: linear-gradient(135deg, #e0f0ff 0%, #f5fbff 60%, #fff 100%);
+    min-height: 100vh;
+    padding: 24px 16px;
+    color: #1a3a52;
   }
-  .wrapper{
-    max-width:100%;
+
+  /* .wrap: membatasi lebar maksimum konten di tengah layar */
+  .wrap { max-width: 960px; margin: 0 auto; }
+
+  /* .hdr: baris header dengan judul di kiri dan status koneksi di kanan */
+  .hdr { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+  .hdr h1 { font-size: 1.4rem; font-weight: 700; color: #1a3a52; }
+
+  /* .conn-info: teks kecil status WiFi, IP, dan MQTT */
+  .conn-info { font-size: 0.75rem; color: #6b8090; }
+  .conn-info b { color: #1a3a52; }
+
+  /* .pill: badge status bulat, .ok = hijau, .err = merah */
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+  .pill.ok  { background: #e6f9ee; color: #1a7a3c; }
+  .pill.err { background: #fdecea; color: #b91c1c; }
+
+  /* .card: kotak putih dengan shadow halus sebagai komponen kartu */
+  .card { background: #fff; border-radius: 14px; padding: 18px 20px; box-shadow: 0 4px 20px rgba(30,90,140,.07); border: 1px solid #e4eff8; }
+
+  /* .grid2: tata letak 2 kartu berdampingan, otomatis 1 kolom di HP */
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 16px; }
+
+  /* .card-title: judul kartu uppercase dengan warna biru tua */
+  .card-title { font-size: 0.85rem; font-weight: 700; color: #1a3a52; margin-bottom: 14px; letter-spacing: 0.02em; text-transform: uppercase; }
+
+  /* .row: baris data sensor, label di kiri dan nilai di kanan */
+  .row { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 0; border-bottom: 1px solid #f0f6fb; }
+  .row:last-child { border-bottom: none; }
+  .lbl  { font-size: 0.8rem; color: #6b8090; }
+  .val  { font-size: 1.05rem; font-weight: 700; color: #1a3a52; }
+  .unit { font-size: 0.75rem; color: #8fa8ba; margin-left: 3px; }
+
+  /* .frow: baris skor fuzzy Tahani, label kiri dan skor kanan */
+  .frow { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #f0f6fb; }
+  .frow:last-of-type { border-bottom: none; }
+  .flbl { font-size: 0.8rem; color: #6b8090; }
+  .fval { font-size: 0.95rem; font-weight: 700; }
+  .fval.hi { color: #1a7a3c; } /* skor >= 0.5: hijau, aktuator ON */
+  .fval.lo { color: #1a3a52; } /* skor  < 0.5: biru tua, aktuator OFF */
+
+  /* .relays: baris tiga badge aktuator kipas, air, dan pH */
+  .relays { display: flex; gap: 8px; margin-top: 14px; }
+  .rbadge { flex: 1; background: #f5faff; border: 1px solid #d6eaf8; border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .rlbl { font-size: 0.7rem; color: #8fa8ba; text-transform: uppercase; letter-spacing: 0.04em; }
+  .rval { font-size: 0.8rem; font-weight: 800; }
+  .rval.on  { color: #1a7a3c; } /* relay ON  → hijau */
+  .rval.off { color: #b91c1c; } /* relay OFF → merah */
+
+  /* .tbl-hdr: baris atas tabel riwayat berisi judul dan tombol refresh */
+  .tbl-hdr { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+
+  /* .btn: tombol muat ulang dengan hover biru muda */
+  .btn { font-size: 0.72rem; padding: 5px 12px; border-radius: 8px; border: 1px solid #cce0f0; background: #f5faff; color: #1a3a52; cursor: pointer; }
+  .btn:hover { background: #ddeeff; }
+
+  /* .tbl-wrap: pembungkus tabel dengan scroll horizontal di layar kecil */
+  .tbl-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #e4eff8; }
+
+  /* table: tabel riwayat data dengan garis bawah antar baris */
+  table { width: 100%; border-collapse: collapse; font-size: 0.71rem; }
+  th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid #f0f6fb; white-space: nowrap; }
+  th { background: #f5faff; color: #6b8090; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.65rem; }
+  tbody tr:hover { background: #f0f8ff; } /* highlight baris saat hover */
+
+  /* .empty: pesan tabel kosong atau saat gagal memuat data */
+  .empty { padding: 14px; text-align: center; color: #8fa8ba; font-size: 0.78rem; }
+
+  /* .fhi / .flo: warna skor fuzzy di tabel riwayat */
+  .fhi { color: #1a7a3c; font-weight: 700; } /* skor >= 0.5 → hijau */
+  .flo { color: #1a3a52; }                   /* skor  < 0.5 → normal */
+
+  /* Responsif: perkecil judul di layar HP (lebar <= 600px) */
+  @media (max-width: 600px) {
+    .hdr h1 { font-size: 1.1rem; }
   }
-}
-</style>
+  </style>
 </head>
 
 <body>
-<!-- ===================== STRUKTUR HALAMAN ===================== -->
-<div class="wrapper">
+<div class="wrap">
 
-  <div class="header">
-    <div class="header-top">
-      <div class="title">Monitoring Greenhouse Cabai Rawit</div>
-      <div class="conn-group">
-        <span id="connMain" class="pill err">Terputus</span>
-        <span class="conn-detail">
-          WiFi <span id="wifiStatus" class="conn-val err">-</span>
-          · IP <span id="wifiIp" class="conn-val">-</span>
-          · MQTT <span id="status" class="conn-val err">-</span>
-        </span>
-      </div>
+  <!-- Header: judul halaman dan status koneksi WiFi, IP, MQTT -->
+  <div class="hdr">
+    <h1>🌿 Monitoring Greenhouse Cabai Rawit</h1>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <!-- #connMain: pill ringkasan semua koneksi (Terhubung/Terputus) -->
+      <span id="connMain" class="pill err">Terputus</span>
+      <span class="conn-info">
+        WiFi <b><span id="wifiStatus">-</span></b>
+        &nbsp;·&nbsp; IP <b><span id="wifiIp">-</span></b>
+        &nbsp;·&nbsp; MQTT <b><span id="mqttStatus">-</span></b>
+      </span>
     </div>
   </div>
 
-  <!-- Grid utama: sensor + fuzzy -->
-  <div class="grid">
+  <!-- Grid 2 kartu: Sensor (kiri) dan Fuzzy Tahani (kanan) -->
+  <div class="grid2">
 
+    <!-- Kartu kiri: nilai sensor real-time dari ESP32 via MQTT -->
     <div class="card">
-      <div class="card-header">
-        <div class="card-title">Pembacaan Sensor</div>
+      <div class="card-title">📡 Pembacaan Sensor</div>
+
+      <!-- Suhu udara dari DHT22 GPIO4, satuan °C -->
+      <div class="row">
+        <span class="lbl">Suhu Udara</span>
+        <span class="val"><span id="temp">–</span><span class="unit">°C</span></span>
       </div>
-      <div class="metric-row">
-        <div class="metric-label">Suhu</div>
-        <div class="metric-value">
-          <span id="temp">-</span><span class="metric-unit">°C</span>
+
+      <!-- Kelembaban udara dari DHT22 GPIO4, satuan % -->
+      <div class="row">
+        <span class="lbl">Kelembaban Udara</span>
+        <span class="val"><span id="hum">–</span><span class="unit">%</span></span>
+      </div>
+
+      <!-- Kelembaban tanah dari sensor resistif ADC GPIO35, satuan % -->
+      <div class="row">
+        <span class="lbl">Kelembaban Tanah</span>
+        <span class="val"><span id="soil">–</span><span class="unit">%</span></span>
+      </div>
+
+      <!-- pH tanah dari modul pH + DMS GPIO34/13; "0.0" jika probe lepas -->
+      <div class="row">
+        <span class="lbl">pH Tanah</span>
+        <span class="val"><span id="ph">–</span></span>
+      </div>
+    </div>
+
+    <!-- Kartu kanan: skor Fuzzy Tahani (centroid 0–1) dan status relay -->
+    <div class="card">
+      <div class="card-title">🧠 Fuzzy Tahani</div>
+
+      <!-- fuzzy_suhu: skor jalur suhu → relay kipas (GPIO25) -->
+      <div class="frow">
+        <span class="flbl">Suhu → Kipas</span>
+        <span id="fuzzy_suhu" class="fval lo">–</span>
+      </div>
+
+      <!-- fuzzy_soil: skor jalur kelembaban tanah → relay pompa air (GPIO26) -->
+      <div class="frow">
+        <span class="flbl">Tanah → Pompa Air</span>
+        <span id="fuzzy_soil" class="fval lo">–</span>
+      </div>
+
+      <!-- fuzzy_ph: skor jalur pH → relay koreksi pH (GPIO27) -->
+      <div class="frow">
+        <span class="flbl">pH → Koreksi pH</span>
+        <span id="fuzzy_ph" class="fval lo">–</span>
+      </div>
+
+      <!-- Badge ON/OFF relay: diperbarui setiap pesan MQTT masuk (~10 detik) -->
+      <div class="relays">
+        <div class="rbadge">
+          <span class="rlbl">Kipas</span>
+          <span id="r_kipas" class="rval off">OFF</span>
         </div>
-      </div>
-      <div class="metric-row">
-        <div class="metric-label">Kelembaban Udara</div>
-        <div class="metric-value">
-          <span id="hum">-</span><span class="metric-unit">%</span>
+        <div class="rbadge">
+          <span class="rlbl">Air</span>
+          <span id="r_air" class="rval off">OFF</span>
         </div>
-      </div>
-      <div class="metric-row">
-        <div class="metric-label">Kelembaban Tanah</div>
-        <div class="metric-value">
-          <span id="soil">-</span><span class="metric-unit">%</span>
-        </div>
-      </div>
-      <div class="metric-row">
-        <div class="metric-label">pH Tanah</div>
-        <div class="metric-value">
-          <span id="ph">-</span>
+        <div class="rbadge">
+          <span class="rlbl">pH</span>
+          <span id="r_ph" class="rval off">OFF</span>
         </div>
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">Kontrol Fuzzy Tahani</div>
-        <div class="card-sub" style="font-size:12px;color:#666;margin-top:2px">
-          Fuzzy Tahani · MIN–MAX · centroid 0–1 · ambang aktuator 0,5 (ESP32)
-        </div>
-      </div>
-      <div class="metric-row">
-        <div class="metric-label">Suhu → blower</div>
-        <div class="metric-value">
-          <span id="fuzzy_suhu">-</span><span class="metric-unit"> / 1</span>
-        </div>
-      </div>
-      <div class="metric-row">
-        <div class="metric-label">Tanah → air</div>
-        <div class="metric-value">
-          <span id="fuzzy_soil">-</span><span class="metric-unit"> / 1</span>
-        </div>
-      </div>
-      <div class="metric-row">
-        <div class="metric-label">pH → koreksi</div>
-        <div class="metric-value">
-          <span id="fuzzy_ph">-</span><span class="metric-unit"> / 1</span>
-        </div>
-      </div>
-      <div class="relay-row">
-        <div class="relay-badge">
-          <span class="relay-label">Kipas</span>
-          <span id="kipas_badge" class="relay-status off">OFF</span>
-        </div>
-        <div class="relay-badge">
-          <span class="relay-label">Air</span>
-          <span id="relay_air" class="relay-status off">OFF</span>
-        </div>
-        <div class="relay-badge">
-          <span class="relay-label">pH</span>
-          <span id="relay_ph" class="relay-status off">OFF</span>
-        </div>
-      </div>
-    </div>
   </div>
 
-  <div class="card history-card">
-    <div class="history-head">
-      <div class="card-title" style="margin:0">Riwayat database (Supabase)</div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span id="supabaseStatus" class="pill err">Belum dimuat</span>
-        <button type="button" class="btn-refresh" id="supabaseRefresh">Muat ulang</button>
+  <!-- Kartu riwayat: tabel data historis dari Supabase, maks. 60 baris terbaru -->
+  <div class="card">
+    <div class="tbl-hdr">
+      <div class="card-title" style="margin:0">📋 Riwayat Data (Supabase)</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <!-- #sbStatus: pill status koneksi Supabase + jumlah baris berhasil dimuat -->
+        <span id="sbStatus" class="pill err">Belum dimuat</span>
+        <!-- Tombol refresh manual: memanggil loadHistory() -->
+        <button class="btn" id="btnRefresh">↻ Muat ulang</button>
       </div>
     </div>
-    <div class="table-wrap">
-      <table class="history-table">
+
+    <!-- Tabel scroll horizontal; thead statis, tbody diisi JavaScript -->
+    <div class="tbl-wrap">
+      <table>
         <thead>
           <tr>
-            <th>Waktu</th>
-            <th>T (°C)</th>
-            <th>RH (%)</th>
-            <th>Tanah (%)</th>
-            <th>pH</th>
-            <th>Tahani Suhu</th>
-            <th>Tahani Tanah</th>
-            <th>Tahani pH</th>
-            <th>R.Kipas</th>
-            <th>R.Air</th>
-            <th>R.pH</th>
+            <th>Waktu</th>      <!-- updated_at / created_at dari Supabase -->
+            <th>T (°C)</th>     <!-- temperature -->
+            <th>RH (%)</th>     <!-- humidity -->
+            <th>Tanah (%)</th>  <!-- soil -->
+            <th>pH</th>         <!-- ph -->
+            <th>F.Suhu</th>     <!-- fuzzy_suhu, centroid 0–1 -->
+            <th>F.Tanah</th>    <!-- fuzzy_soil, centroid 0–1 -->
+            <th>F.pH</th>       <!-- fuzzy_ph,   centroid 0–1 -->
+            <th>Kipas</th>      <!-- relay_kipas ON/OFF -->
+            <th>Air</th>        <!-- relay_air   ON/OFF -->
+            <th>pH</th>         <!-- relay_ph    ON/OFF -->
           </tr>
         </thead>
-        <tbody id="supabaseRows">
-          <tr><td colspan="11" class="history-empty">Memuat…</td></tr>
+        <!-- #sbRows: diisi secara dinamis oleh loadHistory() -->
+        <tbody id="sbRows">
+          <tr><td colspan="11" class="empty">Memuat…</td></tr>
         </tbody>
       </table>
     </div>
@@ -378,289 +239,142 @@ body{
 
 </div>
 
-<!-- ===================== JAVASCRIPT ===================== -->
 <script>
-// --- Konfigurasi (selaras index.ino) ---
-// Ambang skor fuzzy untuk warna hijau; sama dengan RELAY_FUZZY_THRESHOLD = 0.5
+// FUZZY_THRESHOLD : ambang skor Fuzzy Tahani, aktuator ON jika skor >= 0.5
+// SUPABASE_URL    : alamat endpoint proyek Supabase
+// SUPABASE_KEY    : kunci anon Supabase untuk akses SELECT
+// SUPABASE_TABLE  : nama tabel database, sesuai index.ino
+// SUPABASE_LIMIT  : jumlah baris riwayat yang ditampilkan
+// MQTT_HOST       : alamat broker EMQX Cloud via WebSocket TLS (port 8084)
+// MQTT_TOPIC      : topik yang di-publish ESP32, sesuai topic_pub di index.ino
+// MQTT_OPTS       : kredensial dan interval reconnect otomatis tiap 2 detik
 const FUZZY_THRESHOLD = 0.5;
-// URL proyek Supabase
-const SUPABASE_URL = "https://sptomqebtvclfebaktof.supabase.co";
-// Kunci publishable (hanya untuk SELECT jika RLS mengizinkan)
-const SUPABASE_KEY = "sb_publishable_jqEF4hY0nK0Bu0BkKK2ayQ_eW_8fh_u";
-// Nama tabel log sensor (sama dengan index.ino tableName)
-const SUPABASE_TABLE = "pertanian";
-// Maksimal baris riwayat yang ditampilkan (terbaru dulu)
-const SUPABASE_LIMIT = 60;
+const SUPABASE_URL    = "https://sptomqebtvclfebaktof.supabase.co";
+const SUPABASE_KEY    = "sb_publishable_jqEF4hY0nK0Bu0BkKK2ayQ_eW_8fh_u";
+const SUPABASE_TABLE  = "pertanian";
+const SUPABASE_LIMIT  = 60;
+const MQTT_HOST       = "wss://n01d3130.ala.asia-southeast1.emqxsl.com:8084/mqtt";
+const MQTT_TOPIC      = "pertanian/sensor";
+const MQTT_OPTS       = { username:"pertanian", password:"pertanian12", reconnectPeriod:2000 };
 
-// --- MQTT EMQX via WebSocket Secure ---
-// Endpoint wss broker (port 8084 = WebSocket TLS di EMQX Cloud)
-const host = "wss://n01d3130.ala.asia-southeast1.emqxsl.com:8084/mqtt";
-// Topik yang dipublish ESP32 (index.ino topic_pub)
-const topicPub = "pertanian/sensor";
+// lastMsg : timestamp pesan MQTT terakhir, digunakan untuk deteksi ESP32 offline
+// mqttOk  : status koneksi browser ke broker MQTT
+let lastMsg = 0, mqttOk = false;
 
-// Kredensial MQTT + reconnect otomatis setiap 2 detik jika putus
-const options = {
-  username: "pertanian",
-  password: "pertanian12",
-  reconnectPeriod: 2000
-};
-
-let lastSensorMessageTs = 0;
-let mqttBrowserConnected = false;
-
-function updateConnSummary() {
-  const recent =
-    lastSensorMessageTs > 0 && Date.now() - lastSensorMessageTs < 15000;
-  const wifiOk = document.getElementById("wifiStatus").classList.contains("ok");
-  const allOk = mqttBrowserConnected && wifiOk && recent;
-  const pill = document.getElementById("connMain");
-  pill.innerText = allOk ? "Terhubung" : "Terputus";
-  pill.classList.toggle("ok", allOk);
-  pill.classList.toggle("err", !allOk);
+// setPill  : mengubah teks dan class badge status (ok/err)
+// setConn  : mengubah teks dan warna elemen status koneksi
+// relayOn  : normalisasi nilai relay ESP32 (0/1/"1"/true) ke boolean
+// setFuzzy : tampilkan skor centroid 0–1 pada elemen id
+// setRelay : tampilkan teks ON/OFF pada badge aktuator
+// updateSummary : perbarui pill connMain, aktif hanya jika MQTT + WiFi + pesan < 15 detik
+function setPill(id, text, ok) { const el = document.getElementById(id); el.textContent = text; el.className = "pill " + (ok ? "ok" : "err"); }
+function setConn(id, text, ok) { const el = document.getElementById(id); el.textContent = text; el.style.color = ok ? "#4a6fa5" : "#888"; }
+function relayOn(v) { return v===true||v===1||v==="1"||v==="true"; }
+function setFuzzy(id, val) { const el = document.getElementById(id); if (val==null||isNaN(+val)){el.textContent="–";return;} el.textContent=(+val).toFixed(2); }
+function setRelay(id, on) { const el = document.getElementById(id); el.textContent = on ? "ON" : "OFF"; }
+function updateSummary() {
+  const recent = lastMsg > 0 && Date.now() - lastMsg < 15000;
+  const wOk = document.getElementById("wifiStatus").textContent === "Terhubung";
+  setPill("connMain", (mqttOk && wOk && recent) ? "Terhubung" : "Terputus", mqttOk && wOk && recent);
 }
 
-function setConnVal(elId, text, ok) {
-  const el = document.getElementById(elId);
-  el.innerText = text;
-  el.classList.remove("ok", "err");
-  el.classList.add(ok ? "ok" : "err");
-}
+// mqtt.connect : membuka koneksi WebSocket ke broker menggunakan library mqtt.js
+const client = mqtt.connect(MQTT_HOST, MQTT_OPTS);
 
-/**
- * Normalisasi nilai relay dari JSON ke boolean.
- * ESP32 mengirim 0/1; kadang string "true"/"1".
- */
-function relayOn(v) {
-  return (v === true) || (v === 1) || (v === "1") || (v === "true");
-}
+// client.on "connect" : dipanggil saat koneksi berhasil, lalu subscribe topik ESP32
+client.on("connect", () => { mqttOk=true; setConn("mqttStatus","Terhubung",true); client.subscribe(MQTT_TOPIC); updateSummary(); });
 
-/**
- * Tampilkan skor fuzzy Tahani (centroid 0–1) pada elemen id.
- * Hijau (fuzzy-high) jika ≥ FUZZY_THRESHOLD; abu (fuzzy-low) jika di bawah.
- */
-function setFuzzyScore(elId, value) {
-  const el = document.getElementById(elId);
-  if (value == null || value === "" || isNaN(Number(value))) {
-    el.innerText = "-";
-    el.className = "";
-    return;
-  }
-  const n = Number(value);
-  el.innerText = n.toFixed(2);
-  el.className = n >= FUZZY_THRESHOLD ? "fuzzy-high" : "fuzzy-low";
-}
+// client.on "message" : dipanggil tiap ESP32 publish data (~10 detik)
+// JSON.parse mengubah payload MQTT menjadi objek JavaScript
+client.on("message", (topic, msg) => {
+  const d = JSON.parse(msg.toString());
+  lastMsg = Date.now();
 
-// Inisialisasi koneksi MQTT ke broker
-const client = mqtt.connect(host, options);
+  // Tampilkan nilai sensor: suhu, kelembaban udara, kelembaban tanah, pH
+  document.getElementById("temp").textContent = d.temperature != null ? (+d.temperature).toFixed(1) : "–";
+  document.getElementById("hum").textContent  = d.humidity    != null ? (+d.humidity).toFixed(1)    : "–";
+  document.getElementById("soil").textContent = d.soil ?? "–";
 
-// Callback: berhasil terhubung ke broker
-client.on("connect", function () {
-  mqttBrowserConnected = true;
-  setConnVal("status", "Terhubung", true);
-  client.subscribe(topicPub);
-  updateConnSummary();
+  // ph_valid : flag dari ESP32, bernilai 0 jika probe pH lepas atau tidak valid
+  const phOk = d.ph_valid !== undefined ? (d.ph_valid===true||d.ph_valid===1||d.ph_valid==="1") : (d.ph!=null && +d.ph>0);
+  document.getElementById("ph").textContent = phOk && d.ph != null ? (+d.ph).toFixed(1) : "0.0";
+
+  // Tampilkan skor Fuzzy Tahani; fuzzy_air adalah nama lama fuzzy_suhu
+  setFuzzy("fuzzy_suhu", d.fuzzy_suhu ?? d.fuzzy_air);
+  setFuzzy("fuzzy_soil", d.fuzzy_soil);
+  setFuzzy("fuzzy_ph",   d.fuzzy_ph);
+
+  // Tampilkan status ON/OFF tiap relay aktuator
+  setRelay("r_kipas", relayOn(d.relay_kipas));
+  setRelay("r_air",   relayOn(d.relay_air));
+  setRelay("r_ph",    relayOn(d.relay_ph));
+
+  // Tampilkan status WiFi dan IP address dari field yang dikirim ESP32
+  const wOn = d.wifi_connected===true||d.wifi_connected===1||d.wifi_connected==="1";
+  setConn("wifiStatus", wOn ? "Terhubung" : "Terputus", wOn);
+  document.getElementById("wifiIp").textContent = d.wifi_ip || "–";
+  updateSummary();
 });
 
-// Callback: pesan baru pada topik subscribe
-client.on("message", function (topic, message) {
+// client.on "error"/"close" : koneksi gagal/terputus, reconnect otomatis tiap 2 detik
+client.on("error", () => { mqttOk=false; setConn("mqttStatus","Gagal",false); updateSummary(); });
+client.on("close", () => { mqttOk=false; setConn("mqttStatus","Terputus",false); updateSummary(); });
 
-  // Ubah buffer pesan menjadi objek JavaScript
-  const data = JSON.parse(message.toString());
-  lastSensorMessageTs = Date.now();
-
-  const tempVal = data.temperature ?? null;
-  document.getElementById("temp").innerText =
-    tempVal === null || tempVal === "-" ? "-" : Number(tempVal).toFixed(1);
-  const humVal = data.humidity ?? null;
-  document.getElementById("hum").innerText =
-    humVal === null || humVal === "-" ? "-" : Number(humVal).toFixed(1);
-  document.getElementById("soil").innerText = data.soil ?? "-";
-  const phOk = data.ph_valid === undefined
-    ? (data.ph != null && Number(data.ph) > 0)
-    : (data.ph_valid === true || data.ph_valid === 1 || data.ph_valid === "1");
-  const phVal = data.ph ?? null;
-  document.getElementById("ph").innerText =
-    !phOk || phVal === null || phVal === "-" ? "0.0" : Number(phVal).toFixed(1);
-
-  // --- Update skor fuzzy (kompatibel nama lama fuzzy_air) ---
-  const fzSuhu = data.fuzzy_suhu != null ? data.fuzzy_suhu : data.fuzzy_air;
-  setFuzzyScore("fuzzy_suhu", fzSuhu);
-  setFuzzyScore("fuzzy_soil", data.fuzzy_soil);
-  setFuzzyScore("fuzzy_ph", data.fuzzy_ph);
-
-  // --- Update badge aktuator ---
-  const kipasOn = relayOn(data.relay_kipas);
-  const relayAir = relayOn(data.relay_air);
-  const relayPh = relayOn(data.relay_ph);
-
-  document.getElementById("kipas_badge").innerText = kipasOn ? "ON" : "OFF";
-  document.getElementById("kipas_badge").className =
-    "relay-status " + (kipasOn ? "on" : "off");
-  document.getElementById("relay_air").innerText = relayAir ? "ON" : "OFF";
-  document.getElementById("relay_air").className =
-    "relay-status " + (relayAir ? "on" : "off");
-  document.getElementById("relay_ph").innerText = relayPh ? "ON" : "OFF";
-  document.getElementById("relay_ph").className =
-    "relay-status " + (relayPh ? "on" : "off");
-
-  // --- Status WiFi dari field ESP32 ---
-  const wifiConnected = (data.wifi_connected === true) || (data.wifi_connected === 1) || (data.wifi_connected === "1") || (data.wifi_connected === "true");
-  const wifiIp = data.wifi_ip || "-";
-
-  setConnVal("wifiStatus", wifiConnected ? "Terhubung" : "Terputus", wifiConnected);
-  document.getElementById("wifiIp").innerText = wifiIp;
-  updateConnSummary();
-});
-
-// Callback: error koneksi MQTT (broker down, kredensial salah, dll.)
-client.on("error", function () {
-  mqttBrowserConnected = false;
-  setConnVal("status", "Gagal", false);
-  updateConnSummary();
-});
-
-client.on("close", function () {
-  mqttBrowserConnected = false;
-  setConnVal("status", "Terputus", false);
-  updateConnSummary();
-});
-
-// Cek setiap 5 detik: jika >15 detik tanpa pesan MQTT, anggap ESP32/WiFi offline
-setInterval(function () {
-  const now = Date.now();
-  const timeoutMs = 15000;
-  if (lastSensorMessageTs === 0) return;
-  if (now - lastSensorMessageTs > timeoutMs) {
-    setConnVal("wifiStatus", "Terputus", false);
-    document.getElementById("wifiIp").innerText = "-";
-    updateConnSummary();
+// setInterval 5 detik : jika > 15 detik tidak ada pesan, ESP32 dianggap offline
+setInterval(() => {
+  if (lastMsg > 0 && Date.now() - lastMsg > 15000) {
+    setConn("wifiStatus","Terputus",false);
+    document.getElementById("wifiIp").textContent = "–";
+    updateSummary();
   }
 }, 5000);
 
-/**
- * Format kolom waktu dari baris Supabase (updated_at / created_at).
- */
-function formatSupabaseTime(row) {
-  const raw = row.updated_at || row.created_at || row.inserted_at || "";
-  if (!raw) return "-";
-  const d = new Date(raw);
-  return isNaN(d.getTime()) ? String(raw) : d.toLocaleString();
-}
+// fmtTime : format timestamp Supabase (updated_at/created_at) ke format lokal browser
+// oc      : konversi nilai relay Supabase (true/1/"1") ke teks ON atau OFF
+// fv      : format skor fuzzy 2 desimal, atau "–" jika kosong
+function fmtTime(r) { const s=r.updated_at||r.created_at||""; if(!s) return "–"; const d=new Date(s); return isNaN(d)?s:d.toLocaleString(); }
+function oc(v) { return v===true||v===1||v==="1" ? "ON" : v===false||v===0||v==="0" ? "OFF" : String(v??"–"); }
+function fv(v) { return v != null ? (+v).toFixed(2) : "–"; }
 
-/**
- * Teks ON/OFF untuk sel tabel riwayat relay.
- */
-function relayCell(v) {
-  if (v === true || v === 1 || v === "1") return "ON";
-  if (v === false || v === 0 || v === "0") return "OFF";
-  return v != null ? String(v) : "-";
-}
-
-/**
- * Ambil maks. SUPABASE_LIMIT baris terbaru dari REST API Supabase,
- * lalu render ke tbody#supabaseRows.
- */
-async function fetchSupabaseHistory() {
-  const tbody = document.getElementById("supabaseRows");
-  const pill = document.getElementById("supabaseStatus");
-  pill.innerText = "Memuat…";
-  pill.classList.remove("ok", "err");
-  pill.classList.add("err");
-
-  // Query: semua kolom, urut id menurun, batasi jumlah baris
-  const url =
-    SUPABASE_URL +
-    "/rest/v1/" +
-    SUPABASE_TABLE +
-    "?select=*" +
-    "&order=id.desc" +
-    "&limit=" +
-    SUPABASE_LIMIT;
-
+// loadHistory   : kirim HTTP GET ke REST API Supabase, render hasilnya ke tabel
+// fetch(url)    : mengambil data dengan header apikey dan Authorization Bearer
+// res.json()    : mengurai body respons menjadi array objek JavaScript
+// rows.map()    : mengubah setiap baris data menjadi baris HTML <tr>
+// Kode respons  : 200 = berhasil, 401 = RLS blokir akses, 500 = error server
+async function loadHistory() {
+  setPill("sbStatus","Memuat…",false);
+  const url = `${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}?select=*&order=id.desc&limit=${SUPABASE_LIMIT}`;
   try {
-    const res = await fetch(url, {
-      method: "GET",
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: "Bearer " + SUPABASE_KEY,
-        Accept: "application/json"
-      }
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(res.status + " " + errText.slice(0, 120));
-    }
-
+    const res  = await fetch(url, { headers:{ apikey:SUPABASE_KEY, Authorization:"Bearer "+SUPABASE_KEY, Accept:"application/json" } });
+    if (!res.ok) throw new Error(res.status);
     const rows = await res.json();
-    pill.innerText = "Terhubung (" + rows.length + " baris)";
-    pill.classList.remove("err");
-    pill.classList.add("ok");
-
-    if (!rows.length) {
-      tbody.innerHTML =
-        '<tr><td colspan="11" class="history-empty">Belum ada data di tabel.</td></tr>';
-      return;
-    }
-
-    // Bangun HTML baris tabel dari setiap record
-    tbody.innerHTML = rows
-      .map(function (r) {
-        return (
-          "<tr>" +
-          "<td>" +
-          formatSupabaseTime(r) +
-          "</td>" +
-          "<td>" +
-          (r.temperature != null ? Number(r.temperature).toFixed(1) : "-") +
-          "</td>" +
-          "<td>" +
-          (r.humidity != null ? Number(r.humidity).toFixed(1) : "-") +
-          "</td>" +
-          "<td>" +
-          (r.soil != null ? r.soil : "-") +
-          "</td>" +
-          "<td>" +
-          (r.ph != null ? Number(r.ph).toFixed(1) : "-") +
-          "</td>" +
-          "<td>" +
-          (r.fuzzy_suhu != null ? Number(r.fuzzy_suhu).toFixed(2) : (r.fuzzy_air != null ? Number(r.fuzzy_air).toFixed(2) : "-")) +
-          "</td>" +
-          "<td>" +
-          (r.fuzzy_soil != null ? Number(r.fuzzy_soil).toFixed(2) : "-") +
-          "</td>" +
-          "<td>" +
-          (r.fuzzy_ph != null ? Number(r.fuzzy_ph).toFixed(2) : "-") +
-          "</td>" +
-          "<td>" +
-          relayCell(r.relay_kipas) +
-          "</td>" +
-          "<td>" +
-          relayCell(r.relay_air) +
-          "</td>" +
-          "<td>" +
-          relayCell(r.relay_ph) +
-          "</td>" +
-          "</tr>"
-        );
-      })
-      .join("");
-  } catch (e) {
-    pill.innerText = "Gagal: " + (e.message || String(e));
-    pill.classList.remove("ok");
-    pill.classList.add("err");
-    tbody.innerHTML =
-      '<tr><td colspan="11" class="history-empty">Periksa RLS Supabase (izin baca <code>anon</code> untuk SELECT) atau koneksi jaringan.</td></tr>';
+    setPill("sbStatus", `${rows.length} baris`, true);
+    if (!rows.length) { document.getElementById("sbRows").innerHTML=`<tr><td colspan="11" class="empty">Belum ada data.</td></tr>`; return; }
+    document.getElementById("sbRows").innerHTML = rows.map(r => `<tr>
+      <td>${fmtTime(r)}</td>
+      <td>${r.temperature!=null?(+r.temperature).toFixed(1):"–"}</td>
+      <td>${r.humidity!=null?(+r.humidity).toFixed(1):"–"}</td>
+      <td>${r.soil??"–"}</td>
+      <td>${r.ph!=null?(+r.ph).toFixed(1):"–"}</td>
+      <td>${fv(r.fuzzy_suhu??r.fuzzy_air)}</td>
+      <td>${fv(r.fuzzy_soil)}</td>
+      <td>${fv(r.fuzzy_ph)}</td>
+      <td>${oc(r.relay_kipas)}</td>
+      <td>${oc(r.relay_air)}</td>
+      <td>${oc(r.relay_ph)}</td>
+    </tr>`).join("");
+  } catch(e) {
+    setPill("sbStatus","Gagal",false);
+    document.getElementById("sbRows").innerHTML=`<tr><td colspan="11" class="empty">Gagal memuat. Periksa RLS Supabase (izin SELECT untuk anon).</td></tr>`;
   }
 }
 
-// Tombol muat ulang riwayat manual
-document.getElementById("supabaseRefresh").addEventListener("click", fetchSupabaseHistory);
-// Muat riwayat saat halaman pertama kali dibuka
-fetchSupabaseHistory();
-// Refresh riwayat otomatis setiap 60 detik
-setInterval(fetchSupabaseHistory, 60000);
+// addEventListener "click" : panggil loadHistory saat tombol muat ulang diklik
+// loadHistory()            : muat data saat halaman pertama kali dibuka
+// setInterval 60000        : auto-refresh riwayat setiap 60 detik
+document.getElementById("btnRefresh").addEventListener("click", loadHistory);
+loadHistory();
+setInterval(loadHistory, 60000);
 </script>
-
 </body>
 </html>

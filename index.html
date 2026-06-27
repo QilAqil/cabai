@@ -371,7 +371,7 @@ function updateDashboard(d) {
   setText('val-suhu', suhu.toFixed(1));
   setText('val-hum',  hum.toFixed(1));
   setText('val-soil', soil.toFixed(1));
-  setText('val-ph',   ph.toFixed(1));
+  setText('val-ph',   ph.toFixed(2));
 
   setBadge('badge-suhu',  d.status_suhu);
   setBadge('badge-tanah', d.status_tanah);
@@ -482,7 +482,7 @@ function renderTabel(rows) {
     const suhu   = parseFloat(r.temperature ?? 0).toFixed(1);
     const hum    = parseFloat(r.humidity    ?? 0).toFixed(1);
     const soil   = parseFloat(r.soil        ?? 0).toFixed(0);
-    const ph     = parseFloat(r.ph          ?? 0).toFixed(1);
+    const ph     = parseFloat(r.ph          ?? 0).toFixed(2);
 
     const rKipas = parseFloat(r.relay_kipas ?? 0) >= 1.0;
     const rAir   = parseFloat(r.relay_air   ?? 0) >= 1.0;

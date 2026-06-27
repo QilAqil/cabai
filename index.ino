@@ -106,7 +106,10 @@
   //const int WET_VALUE  = 1834; // (Dikalibrasi ulang) ADC saat ini akan membaca 64%
   const int WET_VALUE  = 150;  // (Dikalibrasi ulang) SoilAdc=1202 → 64%, SoilAdc=150 → 100%
  const int SOIL_SAMPLES = 10; // Jumlah sampel averaging per pembacaan
- const unsigned long SOIL_AFTER_PH_MS = 1500UL; // jeda setelah DMS OFF sebelum baca tanah
+ const unsigned long SOIL_AFTER_PH_MS   = 2500UL; // jeda setelah DMS OFF + soil power ON sebelum baca (diperpanjang agar ADC stabil)
+ const unsigned long SOIL_DISCHARGE_MS  = 3000UL; // jeda setelah soil power OFF sebelum baca pH (1 wadah):
+                                                   // memberi waktu arus galvanik di larutan hilang agar
+                                                   // elektroda pH tidak terbias oleh potensial probe soil.
  
  // ============
  // Aktuator (hasil Fuzzy Tahani, ambang RELAY_FUZZY_THRESHOLD)
@@ -138,9 +141,14 @@
  const uint8_t PH_HOLD_MAX_INVALID = 1; // (Diturunkan) Hanya tahan 1 siklus saja agar respon "putus" di layar lebih cepat
  const int PH_ADC_MIN     = 200;     // ADC terlalu rendah (gangguan / terputus)
  const int PH_ADC_MAX     = 3800;    // ADC terlalu tinggi (terputus)
- const int PH_SPREAD_MAX  = 40;      // (Dinaikkan ke 40) Mengakomodasi riak tegangan lingkungan Anda yang berkisar di angka PhSp=12-34.
- // Koreksi software 1 wadah: Dinonaktifkan (0.0) karena ternyata tidak diperlukan/malah merusak hasil
- const float PH_BIAS_WET_SOIL = 0.0f;
+ const int PH_SPREAD_MAX  = 60;      // (Dinaikkan ke 60) Mengakomodasi noise EMI dari relay aktif; PhSp=47-50 masih dianggap valid.
+ // Koreksi software 1 wadah: offset pH akibat interferensi galvanik probe soil.
+ // Saat 2 probe dalam 1 wadah, probe soil menginjeksikan arus ke media → pH terbaca
+ // lebih basa dari nilai sebenarnya. Kalibrasi: ukur pH dengan alat referensi manual,
+ // lalu isi PH_BIAS_WET_SOIL = (pH_terbaca - pH_referensi).
+ // Contoh log: pH terbaca 7.8, pH manual ~5.9 → bias = 1.9 → isi 1.9f.
+ // Set ke 0.0f jika probe soil dan pH di wadah TERPISAH (tidak ada interferensi).
+ const float PH_BIAS_WET_SOIL = 1.9f;  // offset positif karena pH terbias naik
  const int SOIL_WET_PERCENT_MIN = 35; // % tanah: di atas ini koreksi bias dipakai
  // Sensor logam WAJIB menggunakan power gating agar bebas dari polarisasi galvanik.
  // Sambungkan kabel VCC sensor tanah ke GPIO14 (bukan langsung ke 3.3V/5V).
@@ -216,13 +224,22 @@
    digitalWrite(SOIL_PWR_PIN, on ? HIGH : LOW);
  }
  
- /** Kurangi bias pH saat probe soil ikut di media basah (setelah % tanah diketahui). */
+ /** Kurangi bias pH akibat interferensi galvanik probe soil (skenario 1 wadah).
+  *  Bias terjadi karena arus probe soil mengubah potensial referensi elektroda pH.
+  *  Fungsi ini mengurangi offset bias jika tanah cukup basah (probe soil terendam).
+  *  @param phRaw          nilai pH mentah dari ADC (setelah filter median + EMA)
+  *  @param moisturePercent kelembaban tanah saat ini (%)
+  *  @param applied         di-set true jika koreksi diterapkan
+  *  @returns nilai pH setelah koreksi, atau phRaw jika koreksi tidak applicable
+  */
  static float koreksiPhSatuWadah(float phRaw, int moisturePercent, bool &applied) {
    applied = false;
-   if (SOIL_PWR_PIN >= 0) return phRaw;
+   // Hanya koreksi jika PH_BIAS_WET_SOIL dikonfigurasi (> 0) DAN tanah cukup basah
+   // (memastikan probe soil benar-benar terendam larutan sehingga bias terjadi).
+   if (PH_BIAS_WET_SOIL <= 0.0f) return phRaw;
    if (moisturePercent < SOIL_WET_PERCENT_MIN) return phRaw;
    float adj = phRaw - PH_BIAS_WET_SOIL;
-   if (adj < 3.0f || adj > 9.0f) return phRaw;
+   if (adj < 3.0f || adj > 9.0f) return phRaw; // jaga batas pH valid
    applied = true;
    return adj;
  }
@@ -505,8 +522,17 @@
     }
  
     // ===== pH — aktifkan DMS sesaat, tunggu stabil, lalu baca =====
+    // PENTING (1 wadah): Sensor soil WAJIB mati (GPIO14=LOW) SEBELUM DMS aktif
+    // dan tetap mati selama seluruh fase baca pH.
+    // Alasan: probe soil logam menginjeksikan arus ke media tanah → mengubah
+    // potensial referensi elektroda pH → bacaan pH menjadi lebih basa (offset +).
+    // Jeda SOIL_DISCHARGE_MS diperlukan agar arus residual di larutan habis
+    // sebelum elektroda pH mulai membaca.
     phDikoreksi = false;
-    if (SOIL_PWR_PIN >= 0) soilPowerSet(false);
+    if (SOIL_PWR_PIN >= 0) {
+      soilPowerSet(false);                // matikan soil terlebih dahulu
+      waitWithMqtt(SOIL_DISCHARGE_MS);    // tunggu arus residual larutan habis
+    }
     
     digitalWrite(DMSpin, LOW); // Aktifkan DMS HANYA saat akan membaca
     digitalWrite(INDIKATOR_PIN, HIGH);
@@ -529,6 +555,10 @@
     if (SOIL_PWR_PIN >= 0) {
       waitWithMqtt(SOIL_AFTER_PH_MS);
       soilPowerSet(true);
+      // Buang sampel awal setelah power gating dinyalakan:
+      // GPIO14 baru HIGH → kapasitor modul butuh ~500 ms untuk charge penuh.
+      // 10 sampel × 5 ms delay = 50 ms flush, ditambah jeda waitWithMqtt di atas.
+      adcFlushPin(SOIL_PIN, 10);
     }
  
      // ===== Kelembaban tanah — Langsung baca, map, constrain =====
@@ -539,17 +569,21 @@
      // Deteksi sensor dicabut: 
     // 1. ADC terlalu rendah/tinggi → floating/short
     // 2. SoilAdc >= DRY_VALUE → sensor di udara kering
-    // 3. soilSpread > 150 → ADC pin mengambang (floating) → nilai acak
-    if (soilAdc < 500 || soilAdc > 4000 || soilAdc >= (DRY_VALUE - 100) || soilSpread > 150) {
+    // 3. soilSpread > 300 → ADC pin mengambang dengan noise besar (ambang dinaikkan;
+    //    warm-up GPIO14 sesaat menyebabkan spread sementara tinggi meski hardware normal)
+    if (soilAdc < 500 || soilAdc > 4000 || soilAdc >= (DRY_VALUE - 100) || soilSpread > 300) {
       moisturePercent = 0;
     } else {
       moisturePercent = map(soilAdc, DRY_VALUE - 100, WET_VALUE, 0, 100);
       moisturePercent = constrain(moisturePercent, 0, 100);
     }
     
-    // Jika sensor tanah mendeteksi kering kerontang (< 5%), 
-    // sistem akan otomatis menganggap sensor pH juga sedang berada di udara bebas.
-    if (moisturePercent < 5) {
+    // Jika sensor tanah mendeteksi kering kerontang (< 5%) DAN ADC soil memang
+    // benar-benar di luar rentang valid (bukan sekadar spread tinggi), barulah
+    // pH dianggap tidak di tanah. Ini mencegah pH diinvalidasi hanya karena
+    // noise transien sesaat di sensor tanah.
+    bool soilBenarKering = (soilAdc < 500 || soilAdc > 4000 || soilAdc >= (DRY_VALUE - 100));
+    if (moisturePercent < 5 && soilBenarKering) {
       phOkSiklus = false;
     }
 

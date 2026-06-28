@@ -1,716 +1,826 @@
-/*
- * Sistem Monitoring & Kontrol Greenhouse CABAI RAWIT — ESP32
- * (Capsicum frutescens)
+/*********
+ * Sistem IoT Pertanian Cerdas Cabai Rawit
+ * Compile using Arduino IDE 2.x
+ * Board: ESP32 Dev Module (ESP32-30P)
  *
- * Parameter optimal cabai rawit:
- *   - Kelembaban tanah : 50%-70%
- *   - pH tanah        : 6-7
- *   - Suhu udara      : 24-28°C (DHT22)
- *
- * Kontrol: FUZZY TAHANI, 3 jalur terpisah — selaras grafik.py & index.html
- * -------------------------------------------------------------------------
- * Tahapan per jalur:
- *   1. Fuzzifikasi input (μ) — kurva di grafik_fuzzy_input.png
- *   2. Aturan IF-THEN (lihat komentar tiap fuzzyXxxFrom...)
- *   3. Implikasi MIN, agregasi MAX
- *   4. Defuzzifikasi centroid → skor 0–1 (grafik_fuzzy_output.png)
- *   5. Aktuator ON jika skor >= RELAY_FUZZY_THRESHOLD (0,5)
- *
- * Jalur aktuator:
- *   - fuzzy_suhu  ← suhu DHT22     → relay blower GPIO25 (kolom DB relay_blower = flag 0/1)
- *   - fuzzy_soil  ← kelembaban %  → relay air GPIO26
- *   - fuzzy_ph    ← pH tanah       → relay pH GPIO27
- *
- * Sensor: DHT22 GPIO4 | soil AO GPIO35 | pH ADC GPIO34, DMS GPIO13
- * 1 wadah: pH dulu → tanah → koreksi bias pH jika probe soil basah (PH_BIAS_WET_SOIL).
- * Probe pH dicabut: ADC putus/mengambang → ph_valid=0, tampilan "--" (tanpa hold nilai lama).
- * Hardware terbaik: MOSFET matikan VCC modul soil saat baca pH (SOIL_PWR_PIN).
- * Cloud: MQTT topic pertanian/sensor (~10 s) | Supabase tabel pertanian (~30 s)
- * Daya: sensor & servo 3,3 V | modul relay 5 V | adaptor 12 V → expansion board
- *
- * Dashboard index.html: skor Tahani centroid; hijau jika >= 0,5 (sama ambang firmware).
- */
+ * Sensor   : DHT22 (GPIO4), Soil Moisture (GPIO35), pH+DMS (GPIO34+GPIO13)
+ * Aktuator : Relay Kipas (GPIO26), Relay Pompa Air (GPIO27), Relay Pompa pH (GPIO25)
+ * Koneksi  : WiFi → MQTT (EMQX TLS 8883) + Supabase REST API
+ * Logika   : Fuzzy Tahani — fungsi eksplisit per himpunan
+ *********/
 
- #include <DHT.h>
- #include <WiFi.h>
- #include <WiFiClientSecure.h>
- #include <PubSubClient.h>
- #include <HTTPClient.h>
- #include <ArduinoJson.h>
- 
- // ==========================
- // Konfigurasi Sensor DHT22 (AM2302)
- // ==========================
- // Modul 3 pin (VCC, DATA, GND) dengan PCB — pull-up ~10 kΩ sudah di modul, tanpa resistor ekstra.
-// Suhu optimal 24-28°C; jalur fuzzy suhu → relay blower (grafik.py: Rendah/Sedang/Tinggi °C).
- const float TEMP_OPTIMAL_MIN = 24.0f;
- const float TEMP_OPTIMAL_MAX = 28.0f;
- const int DHTPIN  = 4;       // Pin DATA modul DHT22 (GPIO4)
- const int DHTTYPE = DHT22;
- DHT dht(DHTPIN, DHTTYPE);
- 
- // ===========
- // Konfigurasi WiFi
- // ===========
- // Mode yang dipakai: station (WIFI_STA), terkoneksi ke AP laboratorium.
- // SSID & password hard-coded karena lingkungan sudah tetap (bukan user-facing product).
- const char* WIFI_SSID = "UPT-LAB-KOM";
- const char* WIFI_PASS = "uptlab12";
- // Variabel status WiFi untuk dikirim ke dashboard (via MQTT)
- bool wifiConnectedFlag = false;
- String wifiIp = "";
- 
- // =====================
- // Konfigurasi MQTT (TLS)
- // =====================
- // Menggunakan EMQX Cloud (port 8883 / TLS).
- // - topic_pub : dipakai ESP32 untuk mengirim JSON data sensor ke dashboard (index.html).
- const char* mqtt_server = "n01d3130.ala.asia-southeast1.emqxsl.com";
- const int   mqtt_port   = 8883;
- const char* mqtt_user   = "pertanian";
- const char* mqtt_pass   = "pertanian12";
- const char* topic_pub   = "pertanian/sensor";
- 
- WiFiClientSecure tlsClient;
- PubSubClient mqttClient(tlsClient);
- 
- // ==================
- // Konfigurasi Supabase
- // ==================
- // Menggunakan REST endpoint Supabase untuk insert baris baru ke tabel 'pertanian'.
- // Kolom POST: fuzzy_suhu/soil/ph = skor centroid Tahani 0–1; relay_* = status aktuator
- #define supabaseUrl "https://sptomqebtvclfebaktof.supabase.co"
- #define supabaseKey "sb_publishable_jqEF4hY0nK0Bu0BkKK2ayQ_eW_8fh_u"
- #define tableName   "pertanian"
- 
- // Interval kirim data periodik
- // - MQTT_PUB_INTERVAL_MS   : berapa sering data dipublish ke broker MQTT (dashboard real-time).
- // - SUPABASE_INTERVAL_MS   : berapa sering data di-insert ke Supabase (log historis).
- const unsigned long MQTT_PUB_INTERVAL_MS = 10UL * 1000UL;
- const unsigned long SUPABASE_INTERVAL_MS = 60UL * 1000UL; // Diubah ke 60 detik (1 menit)
- unsigned long lastMqttPubMs = 0;
- unsigned long lastSupabaseMs = 0;
- 
- // ===========================
- // Konfigurasi Sensor Soil Moisture (modul probe + PCB)
- // ==========================
- // Modul 4 pin: VCC, GND, DO (digital), AO (analog) — firmware pakai AO saja.
- // Probe resistif + potensiometer di PCB; tanpa resistor ekstra di AO jika keluaran 0–3,3 V.
- // - SOIL_PIN  : AO → ADC ESP32 (GPIO35).
- // - DRY_VALUE / WET_VALUE : kalibrasi dari Serial Monitor (kering vs basah).
-  const int SOIL_PIN   = 35;   // AO modul soil moisture → ADC
-  // Kalibrasi sensor kapasitif anti-karat (ESP32 12-bit ADC).
-  // Kalibrasi: gantung sensor di udara kering → catat SoilAdc → isi DRY_VALUE.
-  //            tancap sensor di tanah sangat basah 5 menit → catat SoilAdc → isi WET_VALUE.
-  const int DRY_VALUE  = 3200; // Nilai ADC saat sensor di udara / kering (0%)
-  //const int WET_VALUE  = 1834; // (Dikalibrasi ulang) ADC saat ini akan membaca 64%
-  const int WET_VALUE  = 150;  // (Dikalibrasi ulang) SoilAdc=1202 → 64%, SoilAdc=150 → 100%
- const int SOIL_SAMPLES = 10; // Jumlah sampel averaging per pembacaan
- const unsigned long SOIL_AFTER_PH_MS   = 2500UL; // jeda setelah DMS OFF + soil power ON sebelum baca (diperpanjang agar ADC stabil)
- const unsigned long SOIL_DISCHARGE_MS  = 3000UL; // jeda setelah soil power OFF sebelum baca pH (1 wadah):
-                                                   // memberi waktu arus galvanik di larutan hilang agar
-                                                   // elektroda pH tidak terbias oleh potensial probe soil.
- 
- // ============
- // Aktuator (hasil Fuzzy Tahani, ambang RELAY_FUZZY_THRESHOLD)
- // ============
- // - Blower: relay GPIO21 (aktif-LOW default).
- // - Air & pH: relay VCC 5 V, aktif-LOW (LOW = ON). Set RELAY_ACTIVE_LOW = false jika modul aktif-HIGH.
- const bool RELAY_ACTIVE_LOW = true;
- const int RELAY_BLOWER_PIN = 25; // relay blower (kipas)
- const int RELAY_WATER_PIN   = 26; // relay pompa air
- const int RELAY_PH_PIN      = 27; // relay koreksi pH 
- 
- // Ambang defuzzifikasi Tahani (centroid 0–1) → ON/OFF aktuator
- const float RELAY_FUZZY_THRESHOLD = 0.5f;
- 
- // =============================
- // Konfigurasi Sensor pH Tanah (probe + driver DMS)
- // =============================
- // - DMSpin      : aktifkan modul kondisioner sinyal DMS (GPIO13, kabel biru).
- // - PH_ADC_PIN  : keluaran analog pH → ADC (GPIO34, kabel ungu).
- // - INDIKATOR_PIN: LED built-in ESP32 (GPIO2) menyala selama fase baca pH.
- // Jika keluaran modul pH sampai 5 V: pasang pembagi 10 kΩ (ke sinyal) + 20 kΩ (ke GND) sebelum GPIO34.
- // Jika keluaran sudah 0–3,3 V: tanpa resistor pembagi.
- const int DMSpin        = 13;      // kabel biru
- const int PH_ADC_PIN    = 34;      // kabel ungu
- const int INDIKATOR_PIN = 2;       // LED built-in ESP32 — menyala saat baca pH
- const int PH_SAMPLES    = 15;      // Jumlah sampel filter Median (ditingkatkan dari 10 ke 15 agar super stabil)
- // DMS aktif (LOW) selama PH_SETTLE_MS agar probe stabil sebelum ADC dibaca.
- const unsigned long PH_SETTLE_MS = 10000UL; // 10 detik (sesuai referensi kode DMS)
- const uint8_t PH_HOLD_MAX_INVALID = 1; // (Diturunkan) Hanya tahan 1 siklus saja agar respon "putus" di layar lebih cepat
- const int PH_ADC_MIN     = 200;     // ADC terlalu rendah (gangguan / terputus)
- const int PH_ADC_MAX     = 3800;    // ADC terlalu tinggi (terputus)
- const int PH_SPREAD_MAX  = 60;      // (Dinaikkan ke 60) Mengakomodasi noise EMI dari relay aktif; PhSp=47-50 masih dianggap valid.
- // Koreksi software 1 wadah: offset pH akibat interferensi galvanik probe soil.
- // Saat 2 probe dalam 1 wadah, probe soil menginjeksikan arus ke media → pH terbaca
- // lebih basa dari nilai sebenarnya. Kalibrasi: ukur pH dengan alat referensi manual,
- // lalu isi PH_BIAS_WET_SOIL = (pH_terbaca - pH_referensi).
- // Contoh log: pH terbaca 7.8, pH manual ~5.9 → bias = 1.9 → isi 1.9f.
- // Set ke 0.0f jika probe soil dan pH di wadah TERPISAH (tidak ada interferensi).
- const float PH_BIAS_WET_SOIL = 1.9f;  // offset positif karena pH terbias naik
- const int SOIL_WET_PERCENT_MIN = 35; // % tanah: di atas ini koreksi bias dipakai
- // Sensor logam WAJIB menggunakan power gating agar bebas dari polarisasi galvanik.
- // Sambungkan kabel VCC sensor tanah ke GPIO14 (bukan langsung ke 3.3V/5V).
- const int SOIL_PWR_PIN = 14; // GPIO14 = saklar daya sensor tanah
- 
- int   PH_ADC;          // nilai ADC mentah untuk pH
- float pH_value;        // nilai pH saat ini
- bool  phOkSiklus;     // pembacaan siklus ini valid (pH <= 14.0)
- bool  phDikoreksi;    // true jika bias 1-wadah diterapkan
- bool  phTampilValid;  // boleh ditampilkan MQTT/dashboard
- 
- static float lastGoodPh = 0.0f;
- static bool hasLastGoodPh = false;
- static uint8_t phInvalidStreak = 0;
- 
- static void adcFlushPin(int pin, int n) {
-   for (int i = 0; i < n; i++) {
-     (void)analogRead(pin);
-     delay(5);
-   }
- }
- 
- // ALGORITMA BARU: Filter Median
- // Sangat ampuh menstabilkan sensor dengan cara membuang angka-angka ekstrem (noise/spike)
- static int bacaAdcMedian(int pin, int nSamples, int &spread) {
-   if (nSamples > 30) nSamples = 30; // Batas aman array
-   int values[30];
-   
-   for (int i = 0; i < nSamples; i++) {
-     values[i] = analogRead(pin);
-     delay(5);
-   }
-   
-   // Urutkan nilai (Bubble Sort) dari terkecil ke terbesar
-   for (int i = 0; i < nSamples - 1; i++) {
-     for (int j = 0; j < nSamples - i - 1; j++) {
-       if (values[j] > values[j+1]) {
-         int temp = values[j];
-         values[j] = values[j+1];
-         values[j+1] = temp;
-       }
-     }
-   }
-   
-   // Hitung spread dengan mengabaikan nilai paling ekstrem (ujung atas dan bawah)
-   // Ini mencegah sensor divonis "putus" hanya karena 1 kedipan listrik
-   if (nSamples >= 5) {
-     spread = values[nSamples - 2] - values[1];
-   } else {
-     spread = values[nSamples - 1] - values[0];
-   }
-   
-   // Ambil nilai paling tengah (Median) yang dijamin bersih dari noise
-   return values[nSamples / 2];
- }
- 
- static float adcKePh(int adc) {
-   float adc10bit = (float)adc / 4.0f;
-   // Kalibrasi ulang: ADC 845 = pH 7.0 (disesuaikan dengan alat manual)
-   return (-0.0233f * adc10bit) + 11.922f;
- }
- 
-  static bool phPembacaanValid(float ph, int adc, int spread) {
-    if (adc < PH_ADC_MIN || adc > PH_ADC_MAX) return false;
-    if (spread > PH_SPREAD_MAX) return false;
-    // Maksimal pH tanah yang diizinkan adalah 9.0
-    return (ph >= 3.0f && ph <= 9.0f);
+// ════════════════════════════════════════════════════════════════
+//  LIBRARY
+// ════════════════════════════════════════════════════════════════
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <DHT.h>
+#include <time.h>         // NTP — built-in ESP32, tidak perlu install library
+
+// ════════════════════════════════════════════════════════════════
+//  KONFIGURASI WiFi
+// ════════════════════════════════════════════════════════════════
+const char* WIFI_SSID = "UPT-LAB-KOM";
+const char* WIFI_PASS = "uptlab12";
+
+// ════════════════════════════════════════════════════════════════
+//  KONFIGURASI MQTT (EMQX Cloud, TLS port 8883)
+// ════════════════════════════════════════════════════════════════
+const char* MQTT_SERVER = "n01d3130.ala.asia-southeast1.emqxsl.com";
+const int   MQTT_PORT   = 8883;
+const char* MQTT_USER   = "pertanian";
+const char* MQTT_PASS   = "pertanian12";
+const char* TOPIC_PUB   = "pertanian/sensor";
+const char* TOPIC_SUB   = "pertanian/kontrol";  // topic perintah manual dari dashboard
+
+// ════════════════════════════════════════════════════════════════
+//  KONFIGURASI SUPABASE
+// ════════════════════════════════════════════════════════════════
+#define SUPABASE_URL  "https://sptomqebtvclfebaktof.supabase.co"
+#define SUPABASE_KEY  "sb_publishable_jqEF4hY0nK0Bu0BkKK2ayQ_eW_8fh_u"
+#define TABLE_NAME    "pertanian"
+
+// ════════════════════════════════════════════════════════════════
+//  KONFIGURASI PIN
+// ════════════════════════════════════════════════════════════════
+#define DHTPIN   4
+#define DHTTYPE  DHT22
+
+const int SOIL_PIN      = 35;
+const int PH_ADC_PIN    = 34;
+const int DMS_PIN       = 13;
+const int LED_PIN       = 2;
+
+const int RELAY_KIPAS     = 26;
+const int RELAY_POMPA_AIR = 27;
+const int RELAY_POMPA_PH  = 25;
+
+// ════════════════════════════════════════════════════════════════
+//  KALIBRASI & INTERVAL
+// ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+//  KALIBRASI SOIL MOISTURE (ADC 12-bit, 0–4095)
+//  Cara kalibrasi:
+//    1. Cabut sensor dari tanah, di udara terbuka → catat ADC → SOIL_ADC_KERING
+//    2. Celupkan ujung sensor ke dalam air        → catat ADC → SOIL_ADC_BASAH
+//  Nilai di bawah estimasi awal — WAJIB disesuaikan dengan sensor Anda
+// ════════════════════════════════════════════════════════════════
+const int SOIL_ADC_KERING = 3800;   // ADC saat kering di udara  → 0%
+const int SOIL_ADC_BASAH  =  800;   // ADC saat basah dalam air  → 100%
+
+const unsigned long INTERVAL_BACA   = 15000UL;  // baca sensor + kirim MQTT tiap 15 detik
+const unsigned long INTERVAL_DB     = 60000UL;  // kirim Supabase tiap 60 detik (1 menit)
+const unsigned long INTERVAL_PH_ON  =  5000UL;  // DMS aktif 5 detik sebelum baca pH
+const unsigned long INTERVAL_PH_OFF =  2000UL;  // jeda 2 detik setelah baca pH
+
+// ════════════════════════════════════════════════════════════════
+//  OBJEK
+// ════════════════════════════════════════════════════════════════
+DHT              dht(DHTPIN, DHTTYPE);
+WiFiClientSecure tlsClient;       // khusus MQTT
+PubSubClient     mqttClient(tlsClient);
+
+// ════════════════════════════════════════════════════════════════
+//  VARIABEL GLOBAL
+// ════════════════════════════════════════════════════════════════
+float g_suhu       = 0.0f;
+float g_kelembaban = 0.0f;
+float g_soil       = 0.0f;
+float g_pH         = 0.0f;
+int   g_adcPH      = 0;
+int   g_adcSoil    = 0;
+
+bool relay_kipas_state     = false;
+bool relay_pompa_air_state = false;
+bool relay_pompa_ph_state  = false;
+
+// Mode manual override dari dashboard
+bool   manual_mode      = false;
+bool   manual_kipas     = false;
+bool   manual_pompa_air = false;
+bool   manual_pompa_ph  = false;
+
+unsigned long lastBacaMillis = 0;
+unsigned long lastDBMillis   = 0;   // timer pengiriman ke Supabase
+
+// ════════════════════════════════════════════════════════════════
+//  STRUCT FUZZY OUTPUT
+//  Dideklarasikan di sini agar bisa dipakai oleh semua fungsi
+//  di bawahnya (publishMQTT, insertSupabase, inferensiFuzzy)
+// ════════════════════════════════════════════════════════════════
+struct FuzzyOutput {
+  bool  kipas;
+  bool  pompa_air;
+  bool  pompa_ph;
+  float mu_kipas;      // → fuzzy_suhu di Supabase
+  float mu_pompa_air;  // → fuzzy_soil di Supabase
+  float mu_pompa_ph;   // → fuzzy_ph   di Supabase
+  const char* status_suhu;
+  const char* status_tanah;
+  const char* status_ph;
+};
+
+// ════════════════════════════════════════════════════════════════
+//  FUNGSI KEANGGOTAAN — SUHU UDARA (°C)
+// ════════════════════════════════════════════════════════════════
+
+// fuzzyTempRendah: trapmf(0, 0, 24, 27)
+//   Jika suhu <= 24  → sepenuhnya Rendah (= 1)
+//   Jika suhu 24–27  → menurun linier: (27 - x) / 3
+//   Jika suhu >= 27  → bukan Rendah (= 0)
+static float fuzzyTempRendah(float x) {
+  if (x <= 24.0f)                    return 1.0f;
+  else if (x > 24.0f && x < 27.0f)  return (27.0f - x) / 3.0f;
+  else                               return 0.0f;
+}
+
+// fuzzyTempSedang: trimf(24, 27, 31)
+//   Jika suhu <= 24 atau >= 31  → bukan Sedang (= 0)
+//   Jika suhu 24–27  → meningkat: (x - 24) / 3
+//   Jika suhu 27–31  → menurun:   (31 - x) / 4
+static float fuzzyTempSedang(float x) {
+  if (x <= 24.0f || x >= 31.0f)     return 0.0f;
+  else if (x > 24.0f && x <= 27.0f) return (x - 24.0f) / 3.0f;
+  else                               return (31.0f - x) / 4.0f;
+}
+
+// fuzzyTempTinggi: trapmf(27, 31, 45, 45)
+//   Jika suhu <= 27  → bukan Tinggi (= 0)
+//   Jika suhu 27–31  → meningkat: (x - 27) / 4
+//   Jika suhu >= 31  → sepenuhnya Tinggi (= 1)
+static float fuzzyTempTinggi(float x) {
+  if (x <= 27.0f)                    return 0.0f;
+  else if (x > 27.0f && x < 31.0f)  return (x - 27.0f) / 4.0f;
+  else                               return 1.0f;
+}
+
+// fuzzyTempStatus: status suhu berdasarkan derajat keanggotaan tertinggi
+static const char* fuzzyTempStatus(float x) {
+  float r = fuzzyTempRendah(x);
+  float s = fuzzyTempSedang(x);
+  float t = fuzzyTempTinggi(x);
+  if (r >= s && r >= t) return "Rendah";
+  else if (s >= t)      return "Sedang";
+  else                  return "Tinggi";
+}
+
+// ════════════════════════════════════════════════════════════════
+//  FUNGSI KEANGGOTAAN — KELEMBABAN TANAH (%)
+// ════════════════════════════════════════════════════════════════
+
+// fuzzySoilKering: trapmf(0, 0, 40, 50)
+//   Jika soil <= 40  → sepenuhnya Kering (= 1)
+//   Jika soil 40–50  → menurun: (50 - x) / 10
+//   Jika soil >= 50  → bukan Kering (= 0)
+static float fuzzySoilKering(float x) {
+  if (x <= 40.0f)                    return 1.0f;
+  else if (x > 40.0f && x < 50.0f)  return (50.0f - x) / 10.0f;
+  else                               return 0.0f;
+}
+
+// fuzzySoilLembab: trapmf(40, 50, 70, 80)
+//   Jika soil <= 40 atau >= 80   → bukan Lembab (= 0)
+//   Jika soil 40–50  → meningkat: (x - 40) / 10
+//   Jika soil 50–70  → sepenuhnya Lembab (= 1)
+//   Jika soil 70–80  → menurun:   (80 - x) / 10
+static float fuzzySoilLembab(float x) {
+  if (x <= 40.0f || x >= 80.0f)      return 0.0f;
+  else if (x > 40.0f && x < 50.0f)   return (x - 40.0f) / 10.0f;
+  else if (x >= 50.0f && x <= 70.0f) return 1.0f;
+  else                                return (80.0f - x) / 10.0f;
+}
+
+// fuzzySoilBasah: trapmf(70, 80, 100, 100)
+//   Jika soil <= 70  → bukan Basah (= 0)
+//   Jika soil 70–80  → meningkat: (x - 70) / 10
+//   Jika soil >= 80  → sepenuhnya Basah (= 1)
+static float fuzzySoilBasah(float x) {
+  if (x <= 70.0f)                    return 0.0f;
+  else if (x > 70.0f && x < 80.0f)  return (x - 70.0f) / 10.0f;
+  else                               return 1.0f;
+}
+
+// fuzzySoilStatus: status tanah berdasarkan derajat keanggotaan tertinggi
+static const char* fuzzySoilStatus(float x) {
+  float k = fuzzySoilKering(x);
+  float l = fuzzySoilLembab(x);
+  float b = fuzzySoilBasah(x);
+  if (k >= l && k >= b) return "Kering";
+  else if (l >= b)      return "Lembab";
+  else                  return "Basah";
+}
+
+// ════════════════════════════════════════════════════════════════
+//  FUNGSI KEANGGOTAAN — pH TANAH
+// ════════════════════════════════════════════════════════════════
+
+// fuzzyPhAsam: trapmf(3, 3, 5, 6)
+//   Jika pH <= 5  → sepenuhnya Asam (= 1)
+//   Jika pH 5–6   → menurun: (6 - x) / 1
+//   Jika pH >= 6  → bukan Asam (= 0)
+static float fuzzyPhAsam(float x) {
+  if (x <= 5.0f)                   return 1.0f;
+  else if (x > 5.0f && x < 6.0f)  return (6.0f - x) / 1.0f;
+  else                             return 0.0f;
+}
+
+// fuzzyPhNormal: trapmf(5.5, 6, 7, 7.5)
+//   Jika pH <= 5.5 atau >= 7.5  → bukan Normal (= 0)
+//   Jika pH 5.5–6   → meningkat: (x - 5.5) / 0.5
+//   Jika pH 6–7     → sepenuhnya Normal (= 1)
+//   Jika pH 7–7.5   → menurun:   (7.5 - x) / 0.5
+static float fuzzyPhNormal(float x) {
+  if (x <= 5.5f || x >= 7.5f)       return 0.0f;
+  else if (x > 5.5f && x < 6.0f)    return (x - 5.5f) / 0.5f;
+  else if (x >= 6.0f && x <= 7.0f)  return 1.0f;
+  else if (x > 7.0f && x < 7.5f)    return (7.5f - x) / 0.5f;
+  else                               return 0.0f;
+}
+
+// fuzzyPhBasa: trapmf(7, 7.5, 9, 9)
+//   Jika pH <= 7    → bukan Basa (= 0)
+//   Jika pH 7–7.5   → meningkat: (x - 7) / 0.5
+//   Jika pH >= 7.5  → sepenuhnya Basa (= 1)
+static float fuzzyPhBasa(float x) {
+  if (x <= 7.0f)                   return 0.0f;
+  else if (x > 7.0f && x < 7.5f)  return (x - 7.0f) / 0.5f;
+  else                             return 1.0f;
+}
+
+// fuzzyPhStatus: status pH berdasarkan derajat keanggotaan tertinggi
+static const char* fuzzyPhStatus(float x) {
+  float a = fuzzyPhAsam(x);
+  float n = fuzzyPhNormal(x);
+  float b = fuzzyPhBasa(x);
+  if (a >= n && a >= b) return "Asam";
+  else if (n >= b)      return "Normal";
+  else                  return "Basa";
+}
+
+// ════════════════════════════════════════════════════════════════
+//  INFERENSI FUZZY TAHANI
+//  Operator: AND = min, OR = max
+//  R1: IF suhu Tinggi                      → KIPAS ON
+//  R2: IF tanah Kering                     → POMPA AIR ON
+//  R3: IF tanah Lembab AND suhu Tinggi     → POMPA AIR ON
+//  R4: IF pH Asam                          → POMPA pH ON
+//  R5: IF pH Basa                          → POMPA pH ON
+// ════════════════════════════════════════════════════════════════
+FuzzyOutput inferensiFuzzy(float suhu, float soil, float pH) {
+  FuzzyOutput out;
+
+  // — Hitung derajat keanggotaan yang dipakai di rule
+  float mu_st = fuzzyTempTinggi(suhu);
+  float mu_tk = fuzzySoilKering(soil);
+  float mu_tl = fuzzySoilLembab(soil);
+  float mu_pa = fuzzyPhAsam(pH);
+  float mu_pb = fuzzyPhBasa(pH);
+
+  // — Status label (argmax via fungsi status)
+  out.status_suhu  = fuzzyTempStatus(suhu);
+  out.status_tanah = fuzzySoilStatus(soil);
+  out.status_ph    = fuzzyPhStatus(pH);
+
+  // — Rule Kipas
+  out.mu_kipas = mu_st;
+  out.kipas    = (mu_st > 0.5f);
+
+  // — Rule Pompa Air
+  float r2 = mu_tk;
+  float r3 = min(mu_tl, mu_st);      // AND = min
+  out.mu_pompa_air = max(r2, r3);     // OR  = max
+  out.pompa_air    = (out.mu_pompa_air > 0.4f);
+
+  // — Rule Pompa pH
+  // Hanya pH Asam yang mengaktifkan pompa pH
+  // pH Basa → mu = 0 → relay OFF (tidak ada koreksi)
+  out.mu_pompa_ph = mu_pa;              // hanya gunakan derajat keanggotaan Asam
+  out.pompa_ph    = (mu_pa > 0.4f);
+
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SENSOR pH — PIPELINE FILTER 11 TAHAP
+//  Tahap 1 : ADC 12-bit + Attenuation 11dB
+//  Tahap 2 : 150 sampel × 5ms
+//  Tahap 3-5: Sort → Trimmed mean 25% → Median
+//  Tahap 6 : Gabung weighted trimmed 60% + median 40%
+//  Tahap 7 : Piecewise kalibrasi 3 titik
+//  Tahap 8 : Kompensasi suhu Nernst
+//  Tahap 9 : Noise gate ±0.8 pH
+//  Tahap 10: Micro-buffer 3 + Weighted MA 12 + EMA 0.08
+//  Tahap 11: Rate limiter 0.01/siklus + Hysteresis 0.03
+//  Deteksi probe: konfirmasi 5 siklus berturut-turut
+// ════════════════════════════════════════════════════════════════
+
+struct PhCalPoint { int adc; float ph; };
+const PhCalPoint PH_CAL[3] = {
+  { 1062, 4.01f },   // buffer pH 4.01 — ganti ADC dari Serial Monitor
+  {  804, 6.86f },   // buffer pH 6.86 — ganti ADC dari Serial Monitor
+  {  600, 9.18f },   // buffer pH 9.18 — ganti ADC dari Serial Monitor
+};
+
+const int   PH_SAMPLES      = 150;
+const int   PH_TRIM_PCT     = 25;
+const int   PH_MA_SIZE      = 20;     // naik dari 12 → 20 siklus (~5 menit)
+const int   PH_MICRO_SIZE   = 5;      // naik dari 3 → 5 siklus
+const float PH_EMA_ALPHA    = 0.05f;  // turun dari 0.08 → 0.05 (lebih halus)
+const float PH_NOISE_GATE   = 0.80f;
+const float PH_RATE_LIMIT   = 0.005f; // turun dari 0.01 → 0.005 per siklus
+const float PH_HYSTERESIS   = 0.05f;  // naik dari 0.03 → 0.05
+const float PH_TEMP_COEF    = 0.003f;
+const float PH_TEMP_REF     = 25.0f;
+const int   PH_ADC_BATAS    = 1080;
+const int   PH_NOTANCAP_CNT = 5;
+
+static float phMicro[5]       = {0,0,0,0,0};  // micro-buffer 5 siklus
+static int   phMicro_idx      = 0;
+static bool  phMicro_full     = false;
+static float phMA[20]         = {0};           // MA 20 siklus
+static int   phMA_idx         = 0;
+static bool  phMA_full        = false;
+static float phEMA            = 0.0f;
+static float phLast           = 0.0f;
+static float phOutput         = 0.0f;
+static int   phNotTancapCount = 0;
+// Warmup: abaikan N pembacaan pertama setelah boot agar elektroda stabil
+static int   phWarmupCount    = 0;
+const  int   PH_WARMUP_N      = 5;   // abaikan 5 pembacaan pertama (~75 detik)
+
+static void sortArray(int* arr, int n) {
+  for (int i = 1; i < n; i++) {
+    int key = arr[i], j = i - 1;
+    while (j >= 0 && arr[j] > key) { arr[j+1] = arr[j]; j--; }
+    arr[j+1] = key;
   }
- 
- static void soilPowerSet(bool on) {
-   if (SOIL_PWR_PIN < 0) return;
-   pinMode(SOIL_PWR_PIN, OUTPUT);
-   digitalWrite(SOIL_PWR_PIN, on ? HIGH : LOW);
- }
- 
- /** Kurangi bias pH akibat interferensi galvanik probe soil (skenario 1 wadah).
-  *  Bias terjadi karena arus probe soil mengubah potensial referensi elektroda pH.
-  *  Fungsi ini mengurangi offset bias jika tanah cukup basah (probe soil terendam).
-  *  @param phRaw          nilai pH mentah dari ADC (setelah filter median + EMA)
-  *  @param moisturePercent kelembaban tanah saat ini (%)
-  *  @param applied         di-set true jika koreksi diterapkan
-  *  @returns nilai pH setelah koreksi, atau phRaw jika koreksi tidak applicable
-  */
- static float koreksiPhSatuWadah(float phRaw, int moisturePercent, bool &applied) {
-   applied = false;
-   // Hanya koreksi jika PH_BIAS_WET_SOIL dikonfigurasi (> 0) DAN tanah cukup basah
-   // (memastikan probe soil benar-benar terendam larutan sehingga bias terjadi).
-   if (PH_BIAS_WET_SOIL <= 0.0f) return phRaw;
-   if (moisturePercent < SOIL_WET_PERCENT_MIN) return phRaw;
-   float adj = phRaw - PH_BIAS_WET_SOIL;
-   if (adj < 3.0f || adj > 9.0f) return phRaw; // jaga batas pH valid
-   applied = true;
-   return adj;
- }
- 
- // =============================================================================
- // LOGIKA FUZZY TAHANI (3 jalur — selaras grafik.py)
- // =============================================================================
- 
- static float fminfz(float a, float b) { return (a < b) ? a : b; }
- static float fmaxfz(float a, float b) { return (a > b) ? a : b; }
- 
- // trimf / trapmf: fungsi keanggotaan input & output (fuzzifikasi Tahani)
- static float trimf(float x, float a, float b, float c) {
-   if ((a == b) && (x == a)) return 1.0f;
-   if ((b == c) && (x == c)) return 1.0f;
-   if (x <= a || x >= c) return 0.0f;
-   if (x == b) return 1.0f;
-   if (x < b) return (x - a) / (b - a);
-   return (c - x) / (c - b);
- }
- 
- static float trapmf(float x, float a, float b, float c, float d) {
-   if ((a == b) && (x == a)) return 1.0f;
-   if ((c == d) && (x == d)) return 1.0f;
-   if (x <= a || x >= d) return 0.0f;
-   if (x >= b && x <= c) return 1.0f;
-   if (x > a && x < b) return (x - a) / (b - a);
-   return (d - x) / (d - c);
- }
- 
- enum OutKind { OUT_RENDAH = 0, OUT_SEDANG = 1, OUT_TINGGI = 2 };
- 
- // Tabel pencarian untuk keanggotaan output guna mempercepat komputasi (menghilangkan division/math di loop)
- static float out_mu_table[3][21];
- static bool table_initialized = false;
- 
- static void initFuzzyTable() {
-   for (int i = 0; i <= 20; i++) {
-     float y = (float)i * 0.05f;
-     out_mu_table[OUT_RENDAH][i] = trapmf(y, 0.0f, 0.0f, 0.15f, 0.45f);
-     out_mu_table[OUT_SEDANG][i] = trimf(y, 0.15f, 0.35f, 0.55f);
-     out_mu_table[OUT_TINGGI][i] = trapmf(y, 0.45f, 0.65f, 1.0f, 1.0f);
-   }
-   table_initialized = true;
- }
- 
- /** Defuzzifikasi centroid Fuzzy Tahani (implikasi MIN, agregasi MAX) yang dioptimalkan dengan tabel pencarian. */
- static float fuzzyTahaniCentroid(float mu1, int kind1, float mu2, int kind2, float mu3, int kind3) {
-   if (!table_initialized) {
-     initFuzzyTable();
-   }
-   float num = 0.0f, den = 0.0f;
-   for (int i = 0; i <= 20; i++) {
-     float y = (float)i * 0.05f; // Menggantikan pembagian berat dengan perkalian konstan
-     float agg = 0.0f;
-     agg = fmaxfz(agg, fminfz(mu1, out_mu_table[kind1][i]));
-     agg = fmaxfz(agg, fminfz(mu2, out_mu_table[kind2][i]));
-     agg = fmaxfz(agg, fminfz(mu3, out_mu_table[kind3][i]));
-     num += y * agg;
-     den += agg;
-   }
-   return (den > 1e-6f) ? (num / den) : 0.0f;
- }
- 
- // -----------------------------------------------------------------------------
- // JALUR 1 — SUHU (DHT22) → fuzzy_suhu → relay blower
- // -----------------------------------------------------------------------------
- static float fuzzyParanetFromTemp(float tempC, bool tempValid) {
-   if (!tempValid) return 0.0f;
-   float muR = trapmf(tempC, 0.0f, 0.0f, 24.0f, 27.0f);
-   float muS = trimf(tempC, 24.0f, 27.0f, 31.0f);
-   float muT = trapmf(tempC, 27.0f, 31.0f, 45.0f, 45.0f);
-   return fuzzyTahaniCentroid(muR, OUT_RENDAH, muS, OUT_SEDANG, muT, OUT_TINGGI);
- }
- 
- // -----------------------------------------------------------------------------
- // JALUR 2 — TANAH (%) → fuzzy_soil → relay air
- // -----------------------------------------------------------------------------
- static float fuzzyWaterFromSoil(int moisturePercent) {
-   float x = (float)moisturePercent;
-   float muK = trapmf(x, 0.0f, 0.0f, 40.0f, 50.0f);
-   float muL = trapmf(x, 40.0f, 50.0f, 70.0f, 80.0f);
-   float muB = trapmf(x, 70.0f, 80.0f, 100.0f, 100.0f);
-   return fuzzyTahaniCentroid(muK, OUT_TINGGI, muL, OUT_RENDAH, muB, OUT_RENDAH);
- }
- 
- // -----------------------------------------------------------------------------
- // JALUR 3 — pH → fuzzy_ph → relay koreksi larutan
- // -----------------------------------------------------------------------------
-  static float fuzzyPhCorrectionFromPh(float ph, bool phValid) {
-    if (!phValid) return 0.0f;
-    float muA = trapmf(ph, 3.0f, 3.0f, 5.0f, 6.0f);
-    float muN = trapmf(ph, 5.5f, 6.0f, 7.0f, 7.5f);
-    float muB = trapmf(ph, 7.0f, 7.5f, 9.0f, 9.0f);
-    return fuzzyTahaniCentroid(muA, OUT_TINGGI, muN, OUT_RENDAH, muB, OUT_TINGGI);
+}
+
+static float adcToPH(int adc) {
+  int idx[3] = {0, 1, 2};
+  for (int i = 0; i < 2; i++)
+    for (int j = 0; j < 2-i; j++)
+      if (PH_CAL[idx[j]].adc > PH_CAL[idx[j+1]].adc) {
+        int t = idx[j]; idx[j] = idx[j+1]; idx[j+1] = t;
+      }
+  int   a0=PH_CAL[idx[0]].adc, a1=PH_CAL[idx[1]].adc, a2=PH_CAL[idx[2]].adc;
+  float p0=PH_CAL[idx[0]].ph,  p1=PH_CAL[idx[1]].ph,  p2=PH_CAL[idx[2]].ph;
+  if      (adc <= a0) { float m=(p1-p0)/(float)(a1-a0); return p0+m*(adc-a0); }
+  else if (adc <= a1) { float r=(float)(adc-a0)/(float)(a1-a0); return p0+r*(p1-p0); }
+  else if (adc <= a2) { float r=(float)(adc-a1)/(float)(a2-a1); return p1+r*(p2-p1); }
+  else                { float m=(p2-p1)/(float)(a2-a1); return p1+m*(adc-a1); }
+}
+
+static float kompensasiSuhu(float ph, float suhu) {
+  return ph - (PH_TEMP_COEF * (suhu - PH_TEMP_REF) * (ph - 7.0f));
+}
+
+float bacaPH() {
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);
+
+  digitalWrite(DMS_PIN, LOW);
+  digitalWrite(LED_PIN, HIGH);
+  // Tunggu DMS stabil — sambil tetap proses MQTT setiap 500ms
+  unsigned long dmsStart = millis();
+  while (millis() - dmsStart < INTERVAL_PH_ON) {
+    mqttClient.loop();
+    delay(500);
   }
- 
- static void relayWrite(int pin, bool on) {
-   if (RELAY_ACTIVE_LOW) {
-     digitalWrite(pin, on ? LOW : HIGH);
-   } else {
-     digitalWrite(pin, on ? HIGH : LOW);
-   }
- }
- 
- static void ensureWiFi() {
-   if (WiFi.status() == WL_CONNECTED) {
-     wifiConnectedFlag = true;
-     wifiIp = WiFi.localIP().toString();
-     return;
-   }
- 
-   WiFi.mode(WIFI_STA);
-   WiFi.begin(WIFI_SSID, WIFI_PASS);
- 
-   unsigned long start = millis();
-   while (WiFi.status() != WL_CONNECTED && (millis() - start) < 20000UL) {
-     delay(500);
-   }
-   if (WiFi.status() == WL_CONNECTED) {
-     wifiConnectedFlag = true;
-     wifiIp = WiFi.localIP().toString();
-   } else {
-     wifiConnectedFlag = false;
-     wifiIp = "";
-   }
- }
- 
- static void ensureMqtt() {
-   if (WiFi.status() != WL_CONNECTED) return;
-   if (mqttClient.connected()) return;
- 
-   tlsClient.setInsecure();
-   mqttClient.setServer(mqtt_server, mqtt_port);
- 
-   String clientId = "esp32-pertanian-";
-   clientId += String((uint32_t)ESP.getEfuseMac(), HEX);
- 
-   mqttClient.connect(clientId.c_str(), mqtt_user, mqtt_pass);
- }
- 
- static void waitWithMqtt(unsigned long ms) {
-   unsigned long start = millis();
-   while (millis() - start < ms) {
-     mqttClient.loop();
-     delay(50);
-   }
- }
- 
- static bool supabaseInsert(
-   float temperature, float humidity, int soil,
-   float ph, float fuzzy_suhu, float fuzzy_soil, float fuzzy_ph,
-   bool blower_on, bool relay_air, bool relay_ph
- ) {
-   if (WiFi.status() != WL_CONNECTED) return false;
- 
-   HTTPClient http;
-   String url = String(supabaseUrl) + "/rest/v1/" + tableName;
-   http.begin(url);
-   http.addHeader("apikey", supabaseKey);
-   http.addHeader("Authorization", String("Bearer ") + supabaseKey);
-   http.addHeader("Content-Type", "application/json");
-   http.addHeader("Prefer", "return=minimal");
- 
-   // Menggunakan StaticJsonDocument untuk efisiensi memori RAM dan mencegah fragmentasi heap
-   StaticJsonDocument<384> doc;
-   doc["temperature"] = temperature;
-   doc["humidity"] = humidity;
-   doc["soil"] = soil;
-   doc["ph"] = ph;
-   doc["fuzzy_suhu"] = fuzzy_suhu;
-   doc["fuzzy_soil"] = fuzzy_soil;
-   doc["fuzzy_ph"] = fuzzy_ph;
-   doc["relay_kipas"] = blower_on ? 1 : 0;
-   doc["relay_air"] = relay_air ? 1 : 0;
-   doc["relay_ph"] = relay_ph ? 1 : 0;
- 
-   char body[384];
-   serializeJson(doc, body, sizeof(body));
- 
-   int code = http.POST((uint8_t*)body, strlen(body));
- 
-   if (code < 200 || code >= 300) {
-     Serial.print("Supabase POST Error: ");
-     Serial.print(code);
-     Serial.print(" - ");
-     Serial.println(http.getString());
-   }
- 
-   http.end();
-   return (code >= 200 && code < 300);
- }
 
- String getTimeStr() {
-   struct tm timeinfo;
-   if (!getLocalTime(&timeinfo, 10)) {
-     // Jika belum dapat jam internet, gunakan hitungan waktu hidup alat
-     unsigned long s = millis() / 1000;
-     char buf[16];
-     sprintf(buf, "[%02lu:%02lu:%02lu]", (s / 3600), (s / 60) % 60, s % 60);
-     return String(buf);
-   }
-   char buf[32];
-   strftime(buf, sizeof(buf), "[%H:%M:%S]", &timeinfo);
-   return String(buf);
- }
- 
- void setup() {
-   Serial.begin(115200);
-   delay(1000);
- 
-   // PubSubClient default buffer sering terlalu kecil untuk JSON.
-   // Samakan pendekatan dengan fuzzy.ino (buffer cukup besar).
-   mqttClient.setBufferSize(512);
-   mqttClient.setKeepAlive(60);
-   pinMode(SOIL_PIN, INPUT);
+  int s[PH_SAMPLES];
+  for (int i = 0; i < PH_SAMPLES; i++) {
+    s[i] = analogRead(PH_ADC_PIN);
+    delay(5);
+    // Proses pesan MQTT setiap 10 sampel agar tidak tertunda
+    if (i % 10 == 0) mqttClient.loop();
+  }
 
-   analogReadResolution(12);
-   analogSetAttenuation(ADC_11db);
-   analogSetPinAttenuation(SOIL_PIN, ADC_11db);
-   analogSetPinAttenuation(PH_ADC_PIN, ADC_11db);
+  digitalWrite(DMS_PIN, HIGH);
+  digitalWrite(LED_PIN, LOW);
+  delay(INTERVAL_PH_OFF);
 
-   pinMode(DMSpin, OUTPUT);
-   // Selalu nonaktifkan DMS secara default untuk mencegah elektroda terpolarisasi 
-   // yang menyebabkan pembacaan pH naik bertahap (drifting).
-   digitalWrite(DMSpin, HIGH);
-   pinMode(INDIKATOR_PIN, OUTPUT);
-   digitalWrite(INDIKATOR_PIN, LOW);
-   if (SOIL_PWR_PIN >= 0) {
-     pinMode(SOIL_PWR_PIN, OUTPUT);
-     digitalWrite(SOIL_PWR_PIN, LOW); // Mulai dalam keadaan mati (OFF) untuk mencegah korosi awal
-   }
- 
-   pinMode(RELAY_BLOWER_PIN, OUTPUT);
-   relayWrite(RELAY_BLOWER_PIN, false);
-   pinMode(RELAY_WATER_PIN, OUTPUT);
-   pinMode(RELAY_PH_PIN, OUTPUT);
-   relayWrite(RELAY_WATER_PIN, false);
-   relayWrite(RELAY_PH_PIN, false);
- 
-   dht.begin();
- 
-   ensureWiFi();
-   configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov"); // Sinkronisasi jam internet (WIB = GMT+7)
-   ensureMqtt();
- 
-   // ===== Warm-up sensor tanah resistif logam =====
-   // Sensor logam memerlukan arus stabil beberapa saat untuk menghilangkan polarisasi awal.
-   // Caranya: baca dan buang 60 sampel dummy (= ~3 detik) agar ADC mencapai kondisi tunak.
-   // Setelah ini selesai, nilai pertama di loop() dijamin sudah stabil.
-   Serial.print("Warming up soil sensor");
-   for (int i = 0; i < 60; i++) {
-     (void)analogRead(SOIL_PIN);
-     delay(50);
-     if (i % 10 == 9) Serial.print(".");
-   }
-   Serial.println(" OK");
- 
-   Serial.println("Greenhouse cabai rawit");
- }
- 
- void loop() {
-   ensureWiFi();
-   ensureMqtt();
-   mqttClient.loop();
- 
-    // Baca DHT22 langsung — sensor digital sudah stabil, tidak perlu filter EMA
-    static bool dhtInitialized = false;
-    float t_raw = dht.readTemperature();
-    float h_raw = dht.readHumidity();
-    bool dhtOk = !(isnan(t_raw) || isnan(h_raw));
+  // Sort
+  sortArray(s, PH_SAMPLES);
 
-    static float t = 26.0f, h = 60.0f; // nilai fallback saat error
-    if (dhtOk) {
-      t = roundf(t_raw * 10.0f) / 10.0f;
-      h = roundf(h_raw * 10.0f) / 10.0f;
-      dhtInitialized = true;
+  // Median
+  int adcMed = (s[74] + s[75]) / 2;
+
+  // Trimmed mean 25%
+  int  trimN = PH_SAMPLES * PH_TRIM_PCT / 100;
+  long sumT  = 0; int cntT = 0;
+  for (int i = trimN; i < PH_SAMPLES-trimN; i++) { sumT += s[i]; cntT++; }
+  int adcTrim = (int)(sumT / cntT);
+
+  // Weighted combine: trimmed 60% + median 40%
+  int adcFinal = (int)(adcTrim * 0.60f + adcMed * 0.40f);
+  g_adcPH = adcFinal;
+
+  // Deteksi probe tidak terpasang (konfirmasi 5x)
+  if (adcFinal >= PH_ADC_BATAS) {
+    phNotTancapCount++;
+    if (phNotTancapCount >= PH_NOTANCAP_CNT) {
+      Serial.printf("[pH] Tidak terpasang (ADC=%d, %d/%d)\n",
+        adcFinal, phNotTancapCount, PH_NOTANCAP_CNT);
+      phLast = phOutput = phEMA = 0.0f;
+      phMicro_idx = phMA_idx = 0;
+      phMicro_full = phMA_full = false;
+      return 0.0f;
+    }
+    Serial.printf("[pH] ADC=%d >= %d (%d/%d), pakai terakhir\n",
+      adcFinal, PH_ADC_BATAS, phNotTancapCount, PH_NOTANCAP_CNT);
+    return phLast;
+  }
+  phNotTancapCount = 0;
+
+  // Konversi + kompensasi suhu
+  float phRaw  = adcToPH(adcFinal);
+  if (phRaw < 0.0f || phRaw > 14.0f) return phLast;
+  float phComp = kompensasiSuhu(phRaw, g_suhu);
+
+  // Noise gate
+  if (phLast > 0.0f && fabsf(phComp - phLast) > PH_NOISE_GATE) {
+    Serial.printf("[pH] Noise gate: delta=%.3f\n", fabsf(phComp-phLast));
+    return phLast;
+  }
+
+  // Micro-buffer 3 siklus
+  phMicro[phMicro_idx] = phComp;
+  phMicro_idx = (phMicro_idx + 1) % PH_MICRO_SIZE;
+  if (phMicro_idx == 0) phMicro_full = true;
+  int   mcnt = phMicro_full ? PH_MICRO_SIZE : phMicro_idx;
+  float phMV = 0.0f;
+  for (int i = 0; i < mcnt; i++) phMV += phMicro[i];
+  phMV /= mcnt;
+
+  // Weighted moving average 12 siklus (bobot linier, terbaru lebih besar)
+  phMA[phMA_idx] = phMV;
+  phMA_idx = (phMA_idx + 1) % PH_MA_SIZE;
+  if (phMA_idx == 0) phMA_full = true;
+  int   macnt  = phMA_full ? PH_MA_SIZE : phMA_idx;
+  float phMAv  = 0.0f, wTot = 0.0f;
+  for (int i = 0; i < macnt; i++) {
+    int   wi = (phMA_idx - macnt + i + PH_MA_SIZE) % PH_MA_SIZE;
+    float w  = 1.0f + (float)i;
+    phMAv   += phMA[wi] * w;
+    wTot    += w;
+  }
+  phMAv /= wTot;
+
+  // EMA
+  phEMA = (phEMA == 0.0f) ? phMAv
+        : PH_EMA_ALPHA * phMAv + (1.0f - PH_EMA_ALPHA) * phEMA;
+
+  // Rate limiter + hysteresis
+  if (phOutput == 0.0f) {
+    phOutput = phEMA;
+  } else if (fabsf(phEMA - phOutput) > PH_HYSTERESIS) {
+    float diff = phEMA - phOutput;
+    phOutput  += (fabsf(diff) > PH_RATE_LIMIT)
+      ? ((diff > 0) ? PH_RATE_LIMIT : -PH_RATE_LIMIT)
+      : diff;
+  }
+
+  phLast = phOutput;
+
+  Serial.printf("[pH] ADCtrim=%d ADCmed=%d ADCfinal=%d "
+                "phRaw=%.3f phComp=%.3f phMicro=%.3f phMA=%.3f phEMA=%.3f phOut=%.3f\n",
+    adcTrim, adcMed, adcFinal,
+    phRaw, phComp, phMV, phMAv, phEMA, phOutput);
+
+  return phOutput;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  BACA SENSOR SOIL MOISTURE
+//  ADC 12-bit → dipetakan ke persentase 0–100%
+// ════════════════════════════════════════════════════════════════
+float bacaSoil() {
+  analogReadResolution(12);
+  int raw = analogRead(SOIL_PIN);
+  g_adcSoil = raw;
+  float pct = map(raw, SOIL_ADC_KERING, SOIL_ADC_BASAH, 0, 100);
+  return constrain(pct, 0.0f, 100.0f);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  KONTROL RELAY  (aktif LOW)
+// ════════════════════════════════════════════════════════════════
+void setRelay(int pin, bool aktif) {
+  digitalWrite(pin, aktif ? LOW : HIGH);
+}
+
+void terapkanAktuator(bool kipas, bool pompa_air, bool pompa_ph) {
+  relay_kipas_state     = kipas;
+  relay_pompa_air_state = pompa_air;
+  relay_pompa_ph_state  = pompa_ph;
+  setRelay(RELAY_KIPAS,     kipas);
+  setRelay(RELAY_POMPA_AIR, pompa_air);
+  setRelay(RELAY_POMPA_PH,  pompa_ph);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  PUBLISH MQTT
+// ════════════════════════════════════════════════════════════════
+void publishMQTT(const FuzzyOutput& fo) {
+  if (!mqttClient.connected()) return;
+
+  StaticJsonDocument<640> doc;
+  doc["temperature"]  = g_suhu;
+  doc["humidity"]     = g_kelembaban;
+  doc["soil"]         = g_soil;
+  doc["ph"]           = g_pH;
+  doc["fuzzy_suhu"]   = fo.mu_kipas;
+  doc["fuzzy_soil"]   = fo.mu_pompa_air;
+  doc["fuzzy_ph"]     = fo.mu_pompa_ph;
+  doc["relay_kipas"]  = relay_kipas_state     ? 1.0f : 0.0f;
+  doc["relay_air"]    = relay_pompa_air_state ? 1.0f : 0.0f;
+  doc["relay_ph"]     = relay_pompa_ph_state  ? 1.0f : 0.0f;
+  doc["status_suhu"]  = fo.status_suhu;
+  doc["status_tanah"] = fo.status_tanah;
+  doc["status_ph"]    = fo.status_ph;
+  doc["adc_ph"]       = g_adcPH;
+  doc["adc_soil"]     = g_adcSoil;
+  doc["waktu"]        = getWaktu();
+  doc["manual_mode"]  = manual_mode;
+  // — Info koneksi WiFi
+  doc["wifi_ssid"]    = WiFi.SSID();
+  doc["wifi_ip"]      = WiFi.localIP().toString();
+  doc["wifi_rssi"]    = WiFi.RSSI();
+  doc["wifi_status"]  = (WiFi.status() == WL_CONNECTED) ? "Terhubung" : "Terputus";
+
+  char buf[640];
+  serializeJson(doc, buf);
+  mqttClient.setBufferSize(640);
+  mqttClient.publish(TOPIC_PUB, buf, true);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  INSERT SUPABASE  — tambah baris baru setiap pengiriman
+//  Menggunakan WiFiClientSecure + HTTPClient LOKAL (tidak berbagi
+//  dengan tlsClient MQTT) agar tidak bentrok dan error -5 hilang.
+// ════════════════════════════════════════════════════════════════
+void insertSupabase(const FuzzyOutput& fo) {
+  // — Bangun JSON body
+  StaticJsonDocument<448> doc;
+  doc["temperature"] = g_suhu;
+  doc["humidity"]    = g_kelembaban;
+  doc["soil"]        = g_soil;
+  doc["ph"]          = g_pH;
+  doc["fuzzy_suhu"]  = fo.mu_kipas;
+  doc["fuzzy_soil"]  = fo.mu_pompa_air;
+  doc["fuzzy_ph"]    = fo.mu_pompa_ph;
+  doc["relay_kipas"] = relay_kipas_state     ? 1.0f : 0.0f;
+  doc["relay_air"]   = relay_pompa_air_state ? 1.0f : 0.0f;
+  doc["relay_ph"]    = relay_pompa_ph_state  ? 1.0f : 0.0f;
+  // — Waktu WIB dari NTP (override updated_at Supabase agar sesuai zona waktu)
+  String iso = getWaktuISO();
+  if (iso.length() > 0) doc["updated_at"] = iso;
+
+  char body[448];
+  serializeJson(doc, body);
+
+  // — Buat objek TLS & HTTP lokal (bukan global tlsClient MQTT)
+  WiFiClientSecure sbClient;
+  sbClient.setInsecure();           // skip verifikasi CA
+
+  HTTPClient http;
+  String url = String(SUPABASE_URL) + "/rest/v1/" + TABLE_NAME;
+
+  if (!http.begin(sbClient, url)) {
+    Serial.println("[Supabase] http.begin() gagal");    return;
+  }
+
+  http.setTimeout(10000);           // timeout 10 detik
+  http.addHeader("Content-Type",  "application/json");
+  http.addHeader("apikey",        SUPABASE_KEY);
+  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+  http.addHeader("Prefer",        "return=minimal");
+
+  int code = http.POST(body);
+  if (code == 201) {
+    // Insert OK
+  } else {
+    Serial.println("[Supabase] Error " + String(code) + ": " + http.getString());
+  }
+  http.end();
+  sbClient.stop();                  // tutup koneksi TLS dengan bersih
+}
+
+// ════════════════════════════════════════════════════════════════
+//  CALLBACK MQTT — terima perintah override manual dari dashboard
+//  Contoh payload:
+//    {"manual":true,"kipas":true,"pompa_air":false,"pompa_ph":false}
+//    {"manual":false}  ← kembali otomatis
+// ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+//  NTP — Sinkronisasi waktu via internet (WIB = UTC+7)
+// ════════════════════════════════════════════════════════════════
+#define NTP_SERVER  "pool.ntp.org"
+#define NTP_OFFSET  25200   // UTC+7 dalam detik (7 * 3600)
+#define NTP_SYNC_MS 60000   // sync ulang tiap 60 detik
+
+void ntpSync() {
+  configTime(NTP_OFFSET, 0, NTP_SERVER);
+  // Tunggu hingga waktu valid (tahun > 2020)
+  struct tm ti;
+  unsigned long t = millis();
+  while (!getLocalTime(&ti) && millis() - t < 5000) delay(200);
+  if (ti.tm_year + 1900 > 2020) {
+    Serial.printf("[NTP]  Waktu sync : %02d/%02d/%04d %02d:%02d:%02d WIB\n",
+      ti.tm_mday, ti.tm_mon + 1, ti.tm_year + 1900,
+      ti.tm_hour, ti.tm_min, ti.tm_sec);
+  } else {
+    Serial.println("[NTP]  Gagal sync waktu");
+  }
+}
+
+// Kembalikan string waktu "HH:MM:SS" dari NTP
+String getWaktu() {
+  struct tm ti;
+  if (!getLocalTime(&ti)) return "--:--:--";
+  char buf[12];
+  strftime(buf, sizeof(buf), "%H:%M:%S", &ti);
+  return String(buf);
+}
+
+// Kembalikan string datetime lengkap untuk Supabase ISO8601
+String getWaktuISO() {
+  struct tm ti;
+  if (!getLocalTime(&ti)) return "";
+  char buf[30];
+  // Format: 2026-06-25T13:25:32+07:00
+  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S+07:00", &ti);
+  return String(buf);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  KONEKSI WiFi
+// ════════════════════════════════════════════════════════════════
+void koneksiWiFi() {
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  unsigned long t = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t < 15000) {
+    delay(500);
+  }
+  if (WiFi.status() != WL_CONNECTED) ESP.restart();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  MQTT CALLBACK — terima perintah manual dari dashboard
+//  Payload JSON: {"manual":true,"kipas":true,"pompa_air":false,"pompa_ph":false}
+//  Kembali otomatis: {"manual":false}
+// ════════════════════════════════════════════════════════════════
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  StaticJsonDocument<200> doc;
+  if (deserializeJson(doc, payload, length)) return;
+
+  if (doc.containsKey("manual")) manual_mode = doc["manual"].as<bool>();
+
+  if (manual_mode) {
+    if (doc.containsKey("kipas"))     manual_kipas     = doc["kipas"].as<bool>();
+    if (doc.containsKey("pompa_air")) manual_pompa_air = doc["pompa_air"].as<bool>();
+    if (doc.containsKey("pompa_ph"))  manual_pompa_ph  = doc["pompa_ph"].as<bool>();
+    // Terapkan relay LANGSUNG — tidak menunggu siklus berikutnya
+    terapkanAktuator(manual_kipas, manual_pompa_air, manual_pompa_ph);
+    Serial.printf("[Manual] Kipas:%s Air:%s pH:%s\n",
+      manual_kipas     ? "ON" : "OFF",
+      manual_pompa_air ? "ON" : "OFF",
+      manual_pompa_ph  ? "ON" : "OFF");
+    // Kirim feedback ke dashboard segera setelah relay berubah
+    // Gunakan nilai fuzzy terakhir sebagai payload
+    FuzzyOutput fo = inferensiFuzzy(g_suhu, g_soil, g_pH);
+    publishMQTT(fo);
+  } else {
+    Serial.println("[Manual] Mode otomatis aktif");
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  KONEKSI MQTT
+// ════════════════════════════════════════════════════════════════
+void koneksiMQTT() {
+  tlsClient.setInsecure();
+  mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+  mqttClient.setBufferSize(640);
+
+  String clientId = "ESP32-Cabai-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+  Serial.print("[MQTT] Menghubungkan ke broker...");
+  while (!mqttClient.connected()) {
+    if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS)) {
+      Serial.println(" OK");
+      Serial.println("[MQTT] Topic pub : " + String(TOPIC_PUB));
+      Serial.println("[MQTT] Topic sub : " + String(TOPIC_SUB));
+      mqttClient.subscribe(TOPIC_SUB);
     } else {
-      Serial.println("DHT22 read error! Menggunakan nilai terakhir.");
+      Serial.print(".");
+      delay(3000);
     }
- 
-    // ===== pH — aktifkan DMS sesaat, tunggu stabil, lalu baca =====
-    // PENTING (1 wadah): Sensor soil WAJIB mati (GPIO14=LOW) SEBELUM DMS aktif
-    // dan tetap mati selama seluruh fase baca pH.
-    // Alasan: probe soil logam menginjeksikan arus ke media tanah → mengubah
-    // potensial referensi elektroda pH → bacaan pH menjadi lebih basa (offset +).
-    // Jeda SOIL_DISCHARGE_MS diperlukan agar arus residual di larutan habis
-    // sebelum elektroda pH mulai membaca.
-    phDikoreksi = false;
-    if (SOIL_PWR_PIN >= 0) {
-      soilPowerSet(false);                // matikan soil terlebih dahulu
-      waitWithMqtt(SOIL_DISCHARGE_MS);    // tunggu arus residual larutan habis
-    }
-    
-    digitalWrite(DMSpin, LOW); // Aktifkan DMS HANYA saat akan membaca
-    digitalWrite(INDIKATOR_PIN, HIGH);
-    
-    // Tunggu 2 detik agar sensor stabil sebelum dibaca
-    waitWithMqtt(2000);
+  }
+}
 
-    adcFlushPin(PH_ADC_PIN, 6);
-    static int phSpread = 0;
-    PH_ADC = bacaAdcMedian(PH_ADC_PIN, PH_SAMPLES, phSpread);
-    float pH_raw = adcKePh(PH_ADC);
-    if (pH_raw > 9.0f) pH_raw = 9.0f; // Batasi maksimal ke 9.0 agar tidak terputus
-    if (pH_raw < 3.0f) pH_raw = 3.0f; // Batasi minimal ke 3.0
-    phOkSiklus = phPembacaanValid(pH_raw, PH_ADC, phSpread);
-    
-    // Segera matikan DMS untuk mencegah pembacaan naik perlahan (polarisasi)
-    digitalWrite(DMSpin, HIGH);
-    digitalWrite(INDIKATOR_PIN, LOW);
+// ════════════════════════════════════════════════════════════════
+//  SETUP
+// ════════════════════════════════════════════════════════════════
+void setup() {
+  Serial.begin(115200);
+  delay(500);
 
-    if (SOIL_PWR_PIN >= 0) {
-      waitWithMqtt(SOIL_AFTER_PH_MS);
-      soilPowerSet(true);
-      // Buang sampel awal setelah power gating dinyalakan:
-      // GPIO14 baru HIGH → kapasitor modul butuh ~500 ms untuk charge penuh.
-      // 10 sampel × 5 ms delay = 50 ms flush, ditambah jeda waitWithMqtt di atas.
-      adcFlushPin(SOIL_PIN, 10);
-    }
- 
-     // ===== Kelembaban tanah — Langsung baca, map, constrain =====
-    int soilSpread = 0;
-    int soilAdc = bacaAdcMedian(SOIL_PIN, SOIL_SAMPLES, soilSpread);
-    int moisturePercent = 0;
-    
-     // Deteksi sensor dicabut: 
-    // 1. ADC terlalu rendah/tinggi → floating/short
-    // 2. SoilAdc >= DRY_VALUE → sensor di udara kering
-    // 3. soilSpread > 300 → ADC pin mengambang dengan noise besar (ambang dinaikkan;
-    //    warm-up GPIO14 sesaat menyebabkan spread sementara tinggi meski hardware normal)
-    if (soilAdc < 500 || soilAdc > 4000 || soilAdc >= (DRY_VALUE - 100) || soilSpread > 300) {
-      moisturePercent = 0;
-    } else {
-      moisturePercent = map(soilAdc, DRY_VALUE - 100, WET_VALUE, 0, 100);
-      moisturePercent = constrain(moisturePercent, 0, 100);
-    }
-    
-    // Jika sensor tanah mendeteksi kering kerontang (< 5%) DAN ADC soil memang
-    // benar-benar di luar rentang valid (bukan sekadar spread tinggi), barulah
-    // pH dianggap tidak di tanah. Ini mencegah pH diinvalidasi hanya karena
-    // noise transien sesaat di sensor tanah.
-    bool soilBenarKering = (soilAdc < 500 || soilAdc > 4000 || soilAdc >= (DRY_VALUE - 100));
-    if (moisturePercent < 5 && soilBenarKering) {
-      phOkSiklus = false;
-    }
+  Serial.println("\n========================================");
+  Serial.println("  Sistem IoT Pertanian Cerdas Cabai");
+  Serial.println("========================================");
 
-    static float filtered_ph = -1.0f;
-    float phPakai = pH_raw;
-    if (phOkSiklus) {
-      float phKoreksi = koreksiPhSatuWadah(pH_raw, moisturePercent, phDikoreksi);
-      if (filtered_ph < 0.0f) {
-        filtered_ph = phKoreksi;
-      } else {
-        // EMA filter (alpha = 0.30) untuk respon lebih cepat & stabil
-        filtered_ph = (0.30f * phKoreksi) + (0.70f * filtered_ph);
-      }
-      phPakai = filtered_ph;
-    } else {
-      filtered_ph = -1.0f; // Reset EMA filter saat sensor dicabut
-    }
-  
-    if (phOkSiklus) {
-      phInvalidStreak = 0;
-      lastGoodPh = phPakai;
-      hasLastGoodPh = true;
-      pH_value = phPakai;
-      phTampilValid = true;
-    } else {
-      // Deteksi apakah probe benar-benar terputus secara fisik atau keluar dari tanah
-      // phSpread dihapus dari kondisi terputus agar saat terjadi noise sesaat (spread tinggi), 
-      // sistem masuk ke mode HOLD (bukan terputus) sehingga relay tidak mati.
-      bool phTerputus = (PH_ADC < PH_ADC_MIN || PH_ADC > PH_ADC_MAX);
-      if (phTerputus) {
-        hasLastGoodPh = false;
-        phInvalidStreak = 99; // force immediate bypass
-      }
-      phInvalidStreak++;
-      if (PH_HOLD_MAX_INVALID > 0 && hasLastGoodPh && phInvalidStreak <= PH_HOLD_MAX_INVALID) {
-        pH_value = lastGoodPh;
-        phTampilValid = true;
-      } else {
-        hasLastGoodPh = false;
-        pH_value = 0.0f;
-        phTampilValid = false;
-      }
+  pinMode(DMS_PIN,         OUTPUT);
+  pinMode(LED_PIN,         OUTPUT);
+  pinMode(RELAY_KIPAS,     OUTPUT);
+  pinMode(RELAY_POMPA_AIR, OUTPUT);
+  pinMode(RELAY_POMPA_PH,  OUTPUT);
+
+  setRelay(RELAY_KIPAS,     false);
+  setRelay(RELAY_POMPA_AIR, false);
+  setRelay(RELAY_POMPA_PH,  false);
+  digitalWrite(DMS_PIN, HIGH);
+
+  dht.begin();
+
+  // — WiFi
+  Serial.print("[WiFi] Menghubungkan ke " + String(WIFI_SSID) + "...");
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  unsigned long t = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t < 15000) {
+    delay(500); Serial.print(".");
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println(" OK");
+    Serial.println("[WiFi] IP Address : " + WiFi.localIP().toString());
+    Serial.println("[WiFi] RSSI       : " + String(WiFi.RSSI()) + " dBm");
+    ntpSync();   // sync waktu setelah WiFi terhubung
+  } else {
+    Serial.println(" GAGAL! Restart...");
+    ESP.restart();
+  }
+
+  koneksiMQTT();
+
+  Serial.println("[INFO] Interval baca  : " + String(INTERVAL_BACA / 1000) + " detik (~" + String((INTERVAL_BACA + INTERVAL_PH_ON + INTERVAL_PH_OFF) / 1000) + "s/siklus)");
+  Serial.println("[INFO] Interval DB    : " + String(INTERVAL_DB / 1000) + " detik (Supabase)");
+  Serial.println("[INFO] Supabase tabel : " + String(TABLE_NAME));
+  Serial.println("========================================");
+  Serial.println("  Format: Suhu | Hum | SoilADC | Soil% | pHADC | pH");
+  Serial.println("========================================\n");
+}
+
+// ════════════════════════════════════════════════════════════════
+//  LOOP
+// ════════════════════════════════════════════════════════════════
+void loop() {
+  if (!mqttClient.connected()) koneksiMQTT();
+  mqttClient.loop();
+  if (WiFi.status() != WL_CONNECTED) koneksiWiFi();
+
+  unsigned long now = millis();
+  if (now - lastBacaMillis >= INTERVAL_BACA) {
+    lastBacaMillis = now;
+
+    // 1. DHT22
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
+    if (!isnan(t) && !isnan(h)) { g_suhu = t; g_kelembaban = h; }
+
+    // 2. Soil Moisture
+    g_soil = bacaSoil();
+
+    // 3. pH + DMS
+    g_pH = bacaPH();
+
+    // 4. Inferensi Fuzzy
+    FuzzyOutput fo = inferensiFuzzy(g_suhu, g_soil, g_pH);
+
+    // 5. Aktuator — hanya jika mode otomatis
+    if (!manual_mode) {
+      terapkanAktuator(fo.kipas, fo.pompa_air, fo.pompa_ph);
     }
 
-    // ===== Defuzzifikasi Tahani (centroid 0–1), aktuator ON jika >= RELAY_FUZZY_THRESHOLD =====
-    // Kontrol fuzzy/relay menggunakan nilai terfilter yang stabil.
-    float ph = phTampilValid ? pH_value : 0.0f;
-    bool phValid = phTampilValid && (ph >= 3.0f && ph <= 9.0f);
- 
-    float scoreParanet = fuzzyParanetFromTemp(t, dhtInitialized);       // → fuzzy_suhu (menggunakan validitas dhtInitialized)
-    float scoreSoil = fuzzyWaterFromSoil(moisturePercent);              // → fuzzy_soil
-    float scorePh = fuzzyPhCorrectionFromPh(ph, phValid);              // → fuzzy_ph
- 
-    bool blowerOn = dhtInitialized && (scoreParanet >= RELAY_FUZZY_THRESHOLD);
-    bool waterOn = (scoreSoil >= RELAY_FUZZY_THRESHOLD);
-    bool phRelayOn = phValid && (scorePh >= RELAY_FUZZY_THRESHOLD);
- 
-    relayWrite(RELAY_BLOWER_PIN, blowerOn);
-    relayWrite(RELAY_WATER_PIN, waterOn);
-    relayWrite(RELAY_PH_PIN, phRelayOn);
- 
-   // ===== Ringkasan singkat ke Serial Monitor (1 baris per loop) =====
-   float phRounded = phTampilValid ? roundf(pH_value * 10.0f) / 10.0f : 0.0f;
-   Serial.print(getTimeStr());
-   Serial.print(" T=");
-   Serial.print(t, 1);
-   Serial.print("C H=");
-   Serial.print(h, 0);
-   Serial.print("% Soil=");
-   Serial.print(moisturePercent);
-   Serial.print("% SoilAdc=");
-   Serial.print(soilAdc);
-   Serial.print("% pH=");
-   if (phTampilValid) {
-     Serial.print(phRounded, 1);
-   } else {
-     Serial.print("--");
-   }
-   Serial.print(phOkSiklus ? "" : (phTampilValid ? "(hold)" : "(putus)"));
-   Serial.print(phDikoreksi ? "(adj)" : "");
-   Serial.print(" PhAdc=");
-   Serial.print(PH_ADC);
-   Serial.print(" PhSp=");
-   Serial.print(phSpread);
-   Serial.print(" Kipas=");
-  Serial.print(blowerOn ? 1 : 0);
-   Serial.print(" Air=");
-   Serial.print(waterOn ? 1 : 0);
-   Serial.print(" PH=");
-   Serial.print(phRelayOn ? 1 : 0);
-   Serial.println();
- 
-   // ===== Publish MQTT =====
-   unsigned long now = millis();
-   if (mqttClient.connected() && (now - lastMqttPubMs >= MQTT_PUB_INTERVAL_MS)) {
-     lastMqttPubMs = now;
- 
-     StaticJsonDocument<384> doc;
-     doc["temperature"] = t;
-     doc["humidity"] = h;
-     doc["soil"] = moisturePercent;
-     doc["ph_valid"] = phTampilValid ? 1 : 0;
-     doc["ph"] = phTampilValid ? phRounded : 0.0f;
-     // Skor centroid Tahani 0–1 (index.html, ambang tampilan 0,5)
-     doc["fuzzy_suhu"] = scoreParanet;
-     doc["fuzzy_soil"] = scoreSoil;
-     doc["fuzzy_ph"] = scorePh;
-     doc["relay_kipas"] = blowerOn ? 1 : 0;
-     doc["relay_air"] = waterOn ? 1 : 0;
-     doc["relay_ph"] = phRelayOn ? 1 : 0;
-     doc["wifi_connected"] = wifiConnectedFlag ? 1 : 0;
-     doc["wifi_ip"] = wifiIp;
-     doc["temp_optimal"] = (t >= TEMP_OPTIMAL_MIN && t <= TEMP_OPTIMAL_MAX) ? 1 : 0;
- 
-     char buffer[384];
-     size_t n = serializeJson(doc, buffer, sizeof(buffer));
-     mqttClient.publish(topic_pub, buffer, n);
-   }
- 
-   // ===== Kirim ke Supabase =====
-   if (now - lastSupabaseMs >= SUPABASE_INTERVAL_MS) {
-     lastSupabaseMs = now;
-     supabaseInsert(t, h, moisturePercent,
-                    phTampilValid ? phRounded : 0.0f,
-                    scoreParanet, scoreSoil, scorePh,
-                    blowerOn, waterOn, phRelayOn);
-   }
- 
-   waitWithMqtt(3UL * 1000UL); // jeda sebelum pembacaan berikutnya (tetap jaga MQTT)
- }
+    // — Tampilkan sensor + relay dalam 1 baris (setelah relay diterapkan)
+    Serial.printf("[%s] Suhu:%.1fC Hum:%.1f%% SoilADC:%d Soil:%.1f%% pHADC:%d pH:%.2f | Kipas:%s Air:%s pH:%s [%s]\n",
+      getWaktu().c_str(),
+      g_suhu, g_kelembaban, g_adcSoil, g_soil, g_adcPH, g_pH,
+      relay_kipas_state     ? "ON" : "OFF",
+      relay_pompa_air_state ? "ON" : "OFF",
+      relay_pompa_ph_state  ? "ON" : "OFF",
+      manual_mode           ? "MANUAL" : "AUTO");
+
+    // 6. Kirim ke MQTT setiap INTERVAL_BACA (15 detik)
+    publishMQTT(fo);
+
+    // 7. Kirim ke Supabase setiap INTERVAL_DB (60 detik)
+    if (now - lastDBMillis >= INTERVAL_DB) {
+      lastDBMillis = now;
+      insertSupabase(fo);
+    }
+  }
+}

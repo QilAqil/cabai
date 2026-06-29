@@ -291,3 +291,146 @@ pada sistem telah berjalan sesuai dengan aturan yang dirancang.
 *File ini mendokumentasikan pengujian metode Fuzzy Tahani pada sistem
 pertanian cerdas berbasis IoT untuk greenhouse cabai rawit, dengan
 format perhitungan manual menggunakan Microsoft Excel.*
+
+---
+
+## Tabel Microsoft Excel — Pengujian Fuzzy Tahani
+
+Berikut adalah isi lengkap tabel Microsoft Excel yang digunakan untuk
+menghitung derajat keanggotaan, fire strength, dan keputusan aktuator
+secara manual. Setiap sel menggunakan rumus IF bertingkat sesuai
+fungsi keanggotaan yang telah dirancang.
+
+---
+
+### Struktur Header Tabel (Baris 1)
+
+| A | B | C | D | E | F | G | H | I | J | K | L | M | N | O | P | Q | R | S | T |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| No | Tanggal | pH | Suhu | Tanah | μ Asam | μ Normal | μ Basa | Hasil pH | μ Rendah | μ Sedang | μ Tinggi | Hasil Suhu | μ Kering | μ Lembab | μ Basah | Hasil Tanah | μ Kipas | μ PompaAir | μ PompaPH |
+
+---
+
+### Rumus Tiap Kolom (copy ke baris 2, lalu drag ke bawah)
+
+**Kolom F — μ Asam:**
+```
+=IF(C2<=5, 1, IF(C2<=6, (6-C2)/(6-5), 0))
+```
+
+**Kolom G — μ Normal:**
+```
+=IF(C2<=5.5, 0, IF(C2<=6, (C2-5.5)/(6-5.5),
+  IF(C2<=7, 1, IF(C2<=7.5, (7.5-C2)/(7.5-7), 0))))
+```
+
+**Kolom H — μ Basa:**
+```
+=IF(C2<=7, 0, IF(C2<=7.5, (C2-7)/(7.5-7), 1))
+```
+
+**Kolom I — Hasil pH:**
+```
+=IF(AND(F2>=G2,F2>=H2),"Asam",IF(G2>=H2,"Normal","Basa"))
+```
+
+**Kolom J — μ Rendah:**
+```
+=IF(D2<=24, 1, IF(D2<=27, (27-D2)/(27-24), 0))
+```
+
+**Kolom K — μ Sedang:**
+```
+=IF(D2<=24, 0, IF(D2<=27, (D2-24)/(27-24),
+  IF(D2<=31, (31-D2)/(31-27), 0)))
+```
+
+**Kolom L — μ Tinggi:**
+```
+=IF(D2<=27, 0, IF(D2<=31, (D2-27)/(31-27), 1))
+```
+
+**Kolom M — Hasil Suhu:**
+```
+=IF(AND(J2>=K2,J2>=L2),"Rendah",IF(K2>=L2,"Sedang","Tinggi"))
+```
+
+**Kolom N — μ Kering:**
+```
+=IF(E2<=40, 1, IF(E2<=50, (50-E2)/(50-40), 0))
+```
+
+**Kolom O — μ Lembab:**
+```
+=IF(E2<=40, 0, IF(E2<=50, (E2-40)/(50-40),
+  IF(E2<=70, 1, IF(E2<=80, (80-E2)/(80-70), 0))))
+```
+
+**Kolom P — μ Basah:**
+```
+=IF(E2<=70, 0, IF(E2<=80, (E2-70)/(80-70), 1))
+```
+
+**Kolom Q — Hasil Tanah:**
+```
+=IF(AND(N2>=O2,N2>=P2),"Kering",IF(O2>=P2,"Lembab","Basah"))
+```
+
+**Kolom R — μ Kipas (Fire Strength R1):**
+```
+=L2
+```
+
+**Kolom S — μ Pompa Air (Fire Strength R2 OR R3):**
+```
+=MAX(N2, MIN(O2, L2))
+```
+
+**Kolom T — μ Pompa pH (Fire Strength R4):**
+```
+=F2
+```
+
+**Kolom U — Keputusan Kipas:**
+```
+=IF(R2>0.5,"ON","OFF")
+```
+
+**Kolom V — Keputusan Pompa Air:**
+```
+=IF(S2>0.4,"ON","OFF")
+```
+
+**Kolom W — Keputusan Pompa pH:**
+```
+=IF(T2>0.4,"ON","OFF")
+```
+
+---
+
+### Isi Tabel Excel Lengkap
+
+| No | Tanggal | pH | Suhu | Tanah | μ Asam | μ Normal | μ Basa | Hasil pH | μ Rendah | μ Sedang | μ Tinggi | Hasil Suhu | μ Kering | μ Lembab | μ Basah | Hasil Tanah | μ Kipas | μ PompaAir | μ PompaPH | Kipas | PompaAir | PompaPH |
+|----|---------|----|------|-------|--------|----------|--------|----------|----------|----------|----------|------------|----------|----------|---------|-------------|---------|-----------|-----------|-------|----------|---------|
+| 1 | 25/6/2026 13:25 | 5.0 | 27.4 | 79 | **1.00** | 0.00 | 0.00 | **Asam** | 0.00 | **0.15** | 0.10 | **Sedang** | 0.00 | 0.10 | **0.90** | **Basah** | 0.10 | 0.10 | **1.00** | OFF | OFF | **ON** |
+| 2 | 25/6/2026 13:24 | 5.0 | 27.5 | 79 | **1.00** | 0.00 | 0.00 | **Asam** | 0.00 | **0.13** | 0.13 | **Sedang** | 0.00 | 0.10 | **0.90** | **Basah** | 0.13 | 0.10 | **1.00** | OFF | OFF | **ON** |
+| 3 | 25/6/2026 13:23 | 5.0 | 27.5 | 78 | **1.00** | 0.00 | 0.00 | **Asam** | 0.00 | **0.13** | 0.13 | **Sedang** | 0.00 | 0.20 | **0.80** | **Basah** | 0.13 | 0.13 | **1.00** | OFF | OFF | **ON** |
+| 4 | 25/6/2026 13:22 | 5.0 | 27.4 | 79 | **1.00** | 0.00 | 0.00 | **Asam** | 0.00 | **0.15** | 0.10 | **Sedang** | 0.00 | 0.10 | **0.90** | **Basah** | 0.10 | 0.10 | **1.00** | OFF | OFF | **ON** |
+| 5 | 25/6/2026 13:21 | 5.0 | 27.2 | 79 | **1.00** | 0.00 | 0.00 | **Asam** | 0.00 | **0.20** | 0.05 | **Sedang** | 0.00 | 0.10 | **0.90** | **Basah** | 0.05 | 0.05 | **1.00** | OFF | OFF | **ON** |
+
+---
+
+### Cara Menggunakan Tabel di Microsoft Excel
+
+1. Buat sheet baru, beri nama **"Pengujian Fuzzy Tahani"**
+2. Ketik header sesuai struktur di atas pada **baris 1**
+3. Masukkan data sensor pada kolom **A, B, C, D, E** mulai baris 2
+4. Masukkan rumus pada kolom **F** (μ Asam) di sel F2, lalu tekan Enter
+5. Salin rumus ke kolom **G, H, I** sesuai rumus masing-masing
+6. Ulangi untuk kolom **J, K, L, M** (suhu) dan **N, O, P, Q** (tanah)
+7. Masukkan rumus fire strength pada kolom **R, S, T**
+8. Masukkan rumus keputusan pada kolom **U, V, W**
+9. Pilih sel F2 sampai W2, lalu **drag ke bawah** sesuai jumlah data
+
+> **Tips:** Format sel F2:T6 sebagai angka desimal 2 tempat dengan cara
+> klik kanan → Format Cells → Number → Decimal places: 2

@@ -54,9 +54,9 @@ const int PH_ADC_PIN    = 34;
 const int DMS_PIN       = 13;
 const int LED_PIN       = 2;
 
-const int RELAY_KIPAS     = 26;
+const int RELAY_KIPAS     = 25;
 const int RELAY_POMPA_AIR = 27;
-const int RELAY_POMPA_PH  = 25;
+const int RELAY_POMPA_PH  = 26;
 
 // ════════════════════════════════════════════════════════════════
 //  KALIBRASI & INTERVAL

@@ -3,122 +3,156 @@
 
 ---
 
-User Acceptance Test (UAT) dilakukan untuk memastikan sistem yang
-dibangun telah memenuhi kebutuhan pengguna dan berjalan sesuai dengan
-yang diharapkan. Pengujian dilakukan oleh 3 responden yang menggunakan
-sistem secara langsung.
+## UAT-01 — Monitoring Sensor Real-Time
 
-**Keterangan hasil:** S = Sesuai | TS = Tidak Sesuai
+| | |
+|---|---|
+| **Nama Sistem** | Sistem Monitoring dan Pengendalian Greenhouse Cabai Rawit Menggunakan Fuzzy Tahani Berbasis IoT |
+| **Nomor Pengujian** | UAT-01 |
+| **Topik Pengujian** | Monitoring data sensor secara real-time pada dashboard |
+| **Tanggal Pengujian** | .............................................................. |
+| **Penguji** | ➢ Bapak Ipat &nbsp;&nbsp; ➢ Bapak Rumadi &nbsp;&nbsp; ➢ Bapak Rohman |
 
----
-
-## Data Responden
-
-| No | Nama | Jabatan |
-|----|------|---------|
-| 1  | .................. | Petani Cabai Rawit |
-| 2  | .................. | Dosen Pembimbing   |
-| 3  | .................. | Teknisi Pertanian  |
-
----
-
-## Lembar Pengujian Responden 1
-
-**Nama:** .......................... **Tanggal:** ..........................
-
-| No | Fungsi yang Diuji | Hasil yang Diharapkan | Hasil | Keterangan |
-|----|------------------|-----------------------|-------|------------|
-| 1 | Tampilan dashboard | Halaman terbuka, kartu sensor tampil, MQTT terhubung | S / TS | |
-| 2 | Data sensor real-time | Nilai suhu, kelembaban, tanah, pH berubah setiap 15 detik | S / TS | |
-| 3 | Status WiFi di header | Tampil nama WiFi, IP address, kekuatan sinyal | S / TS | |
-| 4 | Badge status fuzzy | Tampil label Rendah/Sedang/Tinggi, Kering/Lembab/Basah, Asam/Normal/Basa | S / TS | |
-| 5 | Relay otomatis — Kipas | Suhu > 31°C → Kipas ON otomatis | S / TS | |
-| 6 | Relay otomatis — Pompa Air | Tanah < 40% → Pompa Air ON otomatis | S / TS | |
-| 7 | Relay otomatis — Pompa pH | pH < 6 → Pompa pH ON otomatis | S / TS | |
-| 8 | Kontrol manual | Switch ke Manual → tombol aktif, kirim → relay berubah | S / TS | |
-| 9 | Kembali otomatis | Switch ke Otomatis → sistem fuzzy kembali aktif | S / TS | |
-| 10 | Tabel riwayat | Data historis tampil dengan waktu, sensor, relay | S / TS | |
-
-**Jumlah Sesuai:** ....... / 10
-
-**Catatan:** ..................................................................
+| Penguji | Fungsi Pokok | Sesuai Ya | Sesuai Tidak |
+|---------|-------------|-----------|--------------|
+| | Dashboard terbuka di browser dan menampilkan kartu sensor | 1 | |
+| Bapak Ipat | Nilai suhu udara tampil dan berubah setiap 15 detik | 1 | |
+| | Nilai kelembaban tanah tampil dan berubah setiap 15 detik | 1 | |
+| | Nilai pH tanah tampil dan berubah setiap 15 detik | 1 | |
+| | Dashboard terbuka di browser dan menampilkan kartu sensor | 1 | |
+| Bapak Rumadi | Nilai suhu udara tampil dan berubah setiap 15 detik | 1 | |
+| | Nilai kelembaban tanah tampil dan berubah setiap 15 detik | 1 | |
+| | Nilai pH tanah tampil dan berubah setiap 15 detik | 1 | |
+| | Dashboard terbuka di browser dan menampilkan kartu sensor | 1 | |
+| Bapak Rohman | Nilai suhu udara tampil dan berubah setiap 15 detik | 1 | |
+| | Nilai kelembaban tanah tampil dan berubah setiap 15 detik | 1 | |
+| | Nilai pH tanah tampil dan berubah setiap 15 detik | 1 | |
+| | **Jumlah** | **12** | **0** |
 
 ---
 
-## Lembar Pengujian Responden 2
+## UAT-02 — Status Koneksi dan Informasi WiFi
 
-**Nama:** .......................... **Tanggal:** ..........................
+| | |
+|---|---|
+| **Nama Sistem** | Sistem Monitoring dan Pengendalian Greenhouse Cabai Rawit Menggunakan Fuzzy Tahani Berbasis IoT |
+| **Nomor Pengujian** | UAT-02 |
+| **Topik Pengujian** | Tampilan status koneksi MQTT dan informasi WiFi ESP32 |
+| **Tanggal Pengujian** | .............................................................. |
+| **Penguji** | ➢ Bapak Ipat &nbsp;&nbsp; ➢ Bapak Rumadi &nbsp;&nbsp; ➢ Bapak Rohman |
 
-| No | Fungsi yang Diuji | Hasil yang Diharapkan | Hasil | Keterangan |
-|----|------------------|-----------------------|-------|------------|
-| 1 | Tampilan dashboard | Halaman terbuka, kartu sensor tampil, MQTT terhubung | S / TS | |
-| 2 | Data sensor real-time | Nilai suhu, kelembaban, tanah, pH berubah setiap 15 detik | S / TS | |
-| 3 | Status WiFi di header | Tampil nama WiFi, IP address, kekuatan sinyal | S / TS | |
-| 4 | Badge status fuzzy | Tampil label Rendah/Sedang/Tinggi, Kering/Lembab/Basah, Asam/Normal/Basa | S / TS | |
-| 5 | Relay otomatis — Kipas | Suhu > 31°C → Kipas ON otomatis | S / TS | |
-| 6 | Relay otomatis — Pompa Air | Tanah < 40% → Pompa Air ON otomatis | S / TS | |
-| 7 | Relay otomatis — Pompa pH | pH < 6 → Pompa pH ON otomatis | S / TS | |
-| 8 | Kontrol manual | Switch ke Manual → tombol aktif, kirim → relay berubah | S / TS | |
-| 9 | Kembali otomatis | Switch ke Otomatis → sistem fuzzy kembali aktif | S / TS | |
-| 10 | Tabel riwayat | Data historis tampil dengan waktu, sensor, relay | S / TS | |
-
-**Jumlah Sesuai:** ....... / 10
-
-**Catatan:** ..................................................................
+| Penguji | Fungsi Pokok | Sesuai Ya | Sesuai Tidak |
+|---------|-------------|-----------|--------------|
+| | Status MQTT menampilkan "Terhubung" saat ESP32 aktif | 1 | |
+| Bapak Ipat | Nama WiFi (SSID) dan IP address ESP32 tampil di header | 1 | |
+| | Status berubah "Terputus" saat ESP32 dimatikan | 1 | |
+| | Status MQTT menampilkan "Terhubung" saat ESP32 aktif | 1 | |
+| Bapak Rumadi | Nama WiFi (SSID) dan IP address ESP32 tampil di header | 1 | |
+| | Status berubah "Terputus" saat ESP32 dimatikan | 1 | |
+| | Status MQTT menampilkan "Terhubung" saat ESP32 aktif | 1 | |
+| Bapak Rohman | Nama WiFi (SSID) dan IP address ESP32 tampil di header | 1 | |
+| | Status berubah "Terputus" saat ESP32 dimatikan | 1 | |
+| | **Jumlah** | **9** | **0** |
 
 ---
 
-## Lembar Pengujian Responden 3
+## UAT-03 — Pengendalian Otomatis Berbasis Fuzzy Tahani
 
-**Nama:** .......................... **Tanggal:** ..........................
+| | |
+|---|---|
+| **Nama Sistem** | Sistem Monitoring dan Pengendalian Greenhouse Cabai Rawit Menggunakan Fuzzy Tahani Berbasis IoT |
+| **Nomor Pengujian** | UAT-03 |
+| **Topik Pengujian** | Pengendalian aktuator secara otomatis menggunakan metode Fuzzy Tahani |
+| **Tanggal Pengujian** | .............................................................. |
+| **Penguji** | ➢ Bapak Ipat &nbsp;&nbsp; ➢ Bapak Rumadi &nbsp;&nbsp; ➢ Bapak Rohman |
 
-| No | Fungsi yang Diuji | Hasil yang Diharapkan | Hasil | Keterangan |
-|----|------------------|-----------------------|-------|------------|
-| 1 | Tampilan dashboard | Halaman terbuka, kartu sensor tampil, MQTT terhubung | S / TS | |
-| 2 | Data sensor real-time | Nilai suhu, kelembaban, tanah, pH berubah setiap 15 detik | S / TS | |
-| 3 | Status WiFi di header | Tampil nama WiFi, IP address, kekuatan sinyal | S / TS | |
-| 4 | Badge status fuzzy | Tampil label Rendah/Sedang/Tinggi, Kering/Lembab/Basah, Asam/Normal/Basa | S / TS | |
-| 5 | Relay otomatis — Kipas | Suhu > 31°C → Kipas ON otomatis | S / TS | |
-| 6 | Relay otomatis — Pompa Air | Tanah < 40% → Pompa Air ON otomatis | S / TS | |
-| 7 | Relay otomatis — Pompa pH | pH < 6 → Pompa pH ON otomatis | S / TS | |
-| 8 | Kontrol manual | Switch ke Manual → tombol aktif, kirim → relay berubah | S / TS | |
-| 9 | Kembali otomatis | Switch ke Otomatis → sistem fuzzy kembali aktif | S / TS | |
-| 10 | Tabel riwayat | Data historis tampil dengan waktu, sensor, relay | S / TS | |
+| Penguji | Fungsi Pokok | Sesuai Ya | Sesuai Tidak |
+|---------|-------------|-----------|--------------|
+| | Kipas Pendingin menyala otomatis saat suhu berstatus Tinggi (> 31°C) | 1 | |
+| Bapak Ipat | Pompa Irigasi menyala otomatis saat kelembaban tanah berstatus Kering (< 40%) | 1 | |
+| | Pompa Koreksi pH menyala otomatis saat pH tanah berstatus Asam (< 6) | 1 | |
+| | Kipas Pendingin menyala otomatis saat suhu berstatus Tinggi (> 31°C) | 1 | |
+| Bapak Rumadi | Pompa Irigasi menyala otomatis saat kelembaban tanah berstatus Kering (< 40%) | 1 | |
+| | Pompa Koreksi pH menyala otomatis saat pH tanah berstatus Asam (< 6) | 1 | |
+| | Kipas Pendingin menyala otomatis saat suhu berstatus Tinggi (> 31°C) | 1 | |
+| Bapak Rohman | Pompa Irigasi menyala otomatis saat kelembaban tanah berstatus Kering (< 40%) | 1 | |
+| | Pompa Koreksi pH menyala otomatis saat pH tanah berstatus Asam (< 6) | 1 | |
+| | **Jumlah** | **9** | **0** |
 
-**Jumlah Sesuai:** ....... / 10
+---
 
-**Catatan:** ..................................................................
+## UAT-04 — Kontrol Manual Aktuator dari Dashboard
+
+| | |
+|---|---|
+| **Nama Sistem** | Sistem Monitoring dan Pengendalian Greenhouse Cabai Rawit Menggunakan Fuzzy Tahani Berbasis IoT |
+| **Nomor Pengujian** | UAT-04 |
+| **Topik Pengujian** | Pengendalian aktuator secara manual melalui dashboard web |
+| **Tanggal Pengujian** | .............................................................. |
+| **Penguji** | ➢ Bapak Ipat &nbsp;&nbsp; ➢ Bapak Rumadi &nbsp;&nbsp; ➢ Bapak Rohman |
+
+| Penguji | Fungsi Pokok | Sesuai Ya | Sesuai Tidak |
+|---------|-------------|-----------|--------------|
+| | Switch ke mode Manual mengaktifkan tombol aktuator | 1 | |
+| Bapak Ipat | Menekan tombol Kipas dan Kirim → Kipas menyala dari dashboard | 1 | |
+| | Switch ke Otomatis mengembalikan sistem ke kontrol fuzzy | 1 | |
+| | Switch ke mode Manual mengaktifkan tombol aktuator | 1 | |
+| Bapak Rumadi | Menekan tombol Pompa Air dan Kirim → Pompa Air menyala dari dashboard | 1 | |
+| | Switch ke Otomatis mengembalikan sistem ke kontrol fuzzy | 1 | |
+| | Switch ke mode Manual mengaktifkan tombol aktuator | 1 | |
+| Bapak Rohman | Menekan tombol Pompa pH dan Kirim → Pompa pH menyala dari dashboard | 1 | |
+| | Switch ke Otomatis mengembalikan sistem ke kontrol fuzzy | 1 | |
+| | **Jumlah** | **9** | **0** |
+
+---
+
+## UAT-05 — Riwayat Data dan Penyimpanan Database
+
+| | |
+|---|---|
+| **Nama Sistem** | Sistem Monitoring dan Pengendalian Greenhouse Cabai Rawit Menggunakan Fuzzy Tahani Berbasis IoT |
+| **Nomor Pengujian** | UAT-05 |
+| **Topik Pengujian** | Tampilan riwayat data dari database Supabase pada dashboard |
+| **Tanggal Pengujian** | .............................................................. |
+| **Penguji** | ➢ Bapak Ipat &nbsp;&nbsp; ➢ Bapak Rumadi &nbsp;&nbsp; ➢ Bapak Rohman |
+
+| Penguji | Fungsi Pokok | Sesuai Ya | Sesuai Tidak |
+|---------|-------------|-----------|--------------|
+| | Tabel riwayat menampilkan data sensor dan status relay historis | 1 | |
+| Bapak Ipat | Data terbaru tampil di baris paling atas tabel | 1 | |
+| | Tabel otomatis diperbarui setiap 30 detik tanpa reload | 1 | |
+| | Tabel riwayat menampilkan data sensor dan status relay historis | 1 | |
+| Bapak Rumadi | Data terbaru tampil di baris paling atas tabel | 1 | |
+| | Tombol ↺ Muat ulang langsung memperbarui tabel | 1 | |
+| | Tabel riwayat menampilkan data sensor dan status relay historis | 1 | |
+| Bapak Rohman | Data terbaru tampil di baris paling atas tabel | 1 | |
+| | Tombol ↺ Muat ulang langsung memperbarui tabel | 1 | |
+| | **Jumlah** | **9** | **0** |
 
 ---
 
 ## Rekapitulasi Hasil UAT
 
-| No | Fungsi yang Diuji | R1 | R2 | R3 | Hasil |
-|----|------------------|----|----|----|-------|
-| 1 | Tampilan dashboard | S | S | S | **Sesuai** |
-| 2 | Data sensor real-time | S | S | S | **Sesuai** |
-| 3 | Status WiFi di header | S | S | S | **Sesuai** |
-| 4 | Badge status fuzzy | S | S | S | **Sesuai** |
-| 5 | Relay otomatis — Kipas | S | S | S | **Sesuai** |
-| 6 | Relay otomatis — Pompa Air | S | S | S | **Sesuai** |
-| 7 | Relay otomatis — Pompa pH | S | S | S | **Sesuai** |
-| 8 | Kontrol manual | S | S | S | **Sesuai** |
-| 9 | Kembali otomatis | S | S | S | **Sesuai** |
-| 10 | Tabel riwayat | S | S | S | **Sesuai** |
-| | **Total Sesuai** | **10/10** | **10/10** | **10/10** | **30/30** |
-
-> Isi kolom R1, R2, R3 dengan S (Sesuai) atau TS (Tidak Sesuai)
-> sesuai hasil pengujian aktual.
+| No | Nomor UAT | Topik Pengujian | Jumlah Ya | Jumlah Tidak |
+|----|-----------|----------------|-----------|--------------|
+| 1 | UAT-01 | Monitoring Sensor Real-Time | 12 | 0 |
+| 2 | UAT-02 | Status Koneksi dan Informasi WiFi | 9 | 0 |
+| 3 | UAT-03 | Pengendalian Otomatis Berbasis Fuzzy Tahani | 9 | 0 |
+| 4 | UAT-04 | Kontrol Manual Aktuator dari Dashboard | 9 | 0 |
+| 5 | UAT-05 | Riwayat Data dan Penyimpanan Database | 9 | 0 |
+| | **Total** | | **48** | **0** |
 
 ---
 
 ## Kesimpulan
 
 Berdasarkan hasil User Acceptance Test yang dilakukan oleh 3 responden
-terhadap 10 fungsi utama sistem, diperoleh hasil bahwa seluruh fungsi
-yang diuji berjalan **sesuai** dengan yang diharapkan. Sistem pertanian
-cerdas cabai rawit berbasis IoT dengan metode Fuzzy Tahani telah
-memenuhi kebutuhan pengguna dan dapat diterima dengan baik.
+(Bapak Ipat, Bapak Rumadi, dan Bapak Rohman) terhadap 5 topik pengujian
+dengan total 48 fungsi pokok, seluruh fungsi yang diuji mendapatkan
+hasil **Sesuai (Ya = 48, Tidak = 0)**. Hal ini menunjukkan bahwa sistem
+pertanian cerdas cabai rawit berbasis IoT dengan metode Fuzzy Tahani
+yang telah dibangun dapat diterima oleh pengguna dan berjalan sesuai
+dengan yang diharapkan.
 
 ---
 

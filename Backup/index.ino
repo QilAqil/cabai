@@ -56,26 +56,8 @@ const int RELAY_POMPA_PH  = 26;
 // ════════════════════════════════════════════════════════════════
 //  KALIBRASI & TIMING
 // ════════════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════════════
-//  KALIBRASI SOIL MOISTURE (ADC 12-bit, 0–4095)
-//
-//  Cara kalibrasi ulang:
-//    1. Angkat sensor di udara bebas → catat SoilADC: di Serial → SOIL_ADC_KERING
-//    2. Celupkan ujung sensor ke air  → catat SoilADC: di Serial → SOIL_ADC_BASAH
-//
-//  Kalibrasi saat ini:
-//    ADC 3200 → 0%   (kering di udara — dikoreksi dari data aktual)
-//    ADC 1400 → 100% (basah dalam air  — dikoreksi dari data aktual)
-//
-//  Data koreksi: sistem baca 50% saat alat manual 20%
-//  ADC saat itu ~2300. Untuk hasil 20%:
-//    map(2300, KERING, BASAH, 0, 100) = 20
-//    → (2300-KERING)/(BASAH-KERING) = 0.2
-//  Nilai di bawah disesuaikan agar lebih mendekati kondisi nyata.
-//  WAJIB ukur ulang dengan sensor di udara dan di air.
-// ════════════════════════════════════════════════════════════════
-const int SOIL_ADC_KERING = 2800;   // ADC sensor di udara kering → 0%
-const int SOIL_ADC_BASAH  = 1300;   // ADC sensor dalam air       → 100%
+const int SOIL_ADC_KERING = 3800;
+const int SOIL_ADC_BASAH  =  800;
 
 const TickType_t INTERVAL_SENSOR_MS = 15000;  // siklus sensor (ms)
 const TickType_t INTERVAL_DB_MS     = 60000;  // siklus Supabase (ms)
@@ -87,13 +69,13 @@ const int           SOIL_SAMPLES   = 20;
 const unsigned long INTERVAL_PH_ON  = 5000;
 const unsigned long INTERVAL_PH_OFF = 2000;
 
-// Pompa Air: nyala 5 detik, jeda 30 MENIT
+// Pompa Air: nyala 5 detik, jeda 30 detik
 const unsigned long POMPA_AIR_DURASI = 5000;
-const unsigned long POMPA_AIR_JEDA   = 1800000UL;  // 30 menit
+const unsigned long POMPA_AIR_JEDA   = 30000;
 
-// Pompa pH: nyala 5 detik, jeda 3 JAM
+// Pompa pH: nyala 5 detik, jeda 2 jam
 const unsigned long POMPA_PH_DURASI  = 5000;
-const unsigned long POMPA_PH_JEDA    = 10800000UL; // 3 jam
+const unsigned long POMPA_PH_JEDA    = 7200000UL;
 
 // ════════════════════════════════════════════════════════════════
 //  KALIBRASI pH
@@ -172,10 +154,6 @@ struct SharedData {
   const char* status_tanah = "–";
   const char* status_ph    = "–";
   bool  manual_mode = false;
-  // Countdown jeda pompa (detik tersisa sebelum boleh nyala lagi)
-  // 0 = siap nyala, >0 = masih dalam jeda, -1 = sedang nyala
-  int countdown_air = 0;
-  int countdown_ph  = 0;
 };
 SharedData sd;
 
@@ -538,112 +516,64 @@ static unsigned long pompaAirOnTime = 0, pompaAirOffTime = 0;
 static bool          pompaAirNyala  = false;
 static unsigned long pompaPHOnTime  = 0, pompaPHOffTime  = 0;
 static bool          pompaPHNyala   = false;
-// Permintaan nyala dari fuzzy/manual — diset terapkanAktuator, dicek tickPompa
-static bool reqPompaAir = false;
-static bool reqPompaPH  = false;
 
-// ── tickPompa: dipanggil setiap 50ms dari taskSensor loop ────────
-// Mengelola timer ON/OFF pompa secara independen dari siklus sensor.
-// Dengan cara ini relay tidak bisa nyala dobel akibat pemanggilan
-// terapkanAktuator dari dua tempat (fast-path + siklus sensor).
-void tickPompa() {
+void terapkanAktuator(bool kipas, bool pompa_air, bool pompa_ph) {
   unsigned long now = millis();
-  int cdAir = 0, cdPH = 0;
 
-  // ── Pompa Air ────────────────────────────────────────────────
-  if (reqPompaAir && !pompaAirNyala) {
-    // Ada permintaan ON dan sedang tidak nyala — cek jeda
+  // Kipas — langsung
+  setRelay(RELAY_KIPAS, kipas);
+
+  // Pompa Air — timer 5 detik nyala, 30 detik jeda
+  if (pompa_air && !pompaAirNyala) {
     if (pompaAirOffTime == 0 || now - pompaAirOffTime >= POMPA_AIR_JEDA) {
       setRelay(RELAY_POMPA_AIR, true);
       pompaAirNyala  = true;
       pompaAirOnTime = now;
-      Serial.println("[PompaAir] ON — nyala 5 detik");
+      Serial.println("[PompaAir] ON");
     } else {
-      unsigned long sisa = POMPA_AIR_JEDA - (now - pompaAirOffTime);
-      cdAir = (int)(sisa / 1000);
-    }
-  }
-  if (pompaAirNyala) {
-    cdAir = -1;
-    if (now - pompaAirOnTime >= POMPA_AIR_DURASI) {
-      // Durasi 5 detik habis — matikan
       setRelay(RELAY_POMPA_AIR, false);
-      pompaAirNyala   = false;
-      pompaAirOffTime = now;
-      reqPompaAir     = false;  // reset permintaan, tunggu siklus fuzzy berikutnya
-      Serial.printf("[PompaAir] OFF — jeda 30 menit (%lu detik)\n", POMPA_AIR_JEDA/1000);
-      cdAir = (int)(POMPA_AIR_JEDA / 1000);
     }
   }
-  if (!reqPompaAir && !pompaAirNyala) {
+  if (pompaAirNyala && now - pompaAirOnTime >= POMPA_AIR_DURASI) {
     setRelay(RELAY_POMPA_AIR, false);
-    if (pompaAirOffTime > 0 && now - pompaAirOffTime < POMPA_AIR_JEDA)
-      cdAir = (int)((POMPA_AIR_JEDA - (now - pompaAirOffTime)) / 1000);
+    pompaAirNyala   = false;
+    pompaAirOffTime = now;
+    Serial.println("[PompaAir] OFF — jeda 30 detik");
+  }
+  if (!pompa_air && !pompaAirNyala) {
+    setRelay(RELAY_POMPA_AIR, false);
+  }
+  if (!pompa_air && pompaAirNyala) {
+    setRelay(RELAY_POMPA_AIR, false);
+    pompaAirNyala   = false;
+    pompaAirOffTime = now;
   }
 
-  // ── Pompa pH ─────────────────────────────────────────────────
-  if (reqPompaPH && !pompaPHNyala) {
+  // Pompa pH — timer 5 detik nyala, 2 jam jeda
+  if (pompa_ph && !pompaPHNyala) {
     if (pompaPHOffTime == 0 || now - pompaPHOffTime >= POMPA_PH_JEDA) {
       setRelay(RELAY_POMPA_PH, true);
       pompaPHNyala  = true;
       pompaPHOnTime = now;
-      Serial.println("[PompaPH] ON — nyala 5 detik");
+      Serial.println("[PompaPH] ON");
     } else {
-      unsigned long sisa = POMPA_PH_JEDA - (now - pompaPHOffTime);
-      cdPH = (int)(sisa / 1000);
-    }
-  }
-  if (pompaPHNyala) {
-    cdPH = -1;
-    if (now - pompaPHOnTime >= POMPA_PH_DURASI) {
       setRelay(RELAY_POMPA_PH, false);
-      pompaPHNyala   = false;
-      pompaPHOffTime = now;
-      reqPompaPH     = false;
-      Serial.printf("[PompaPH] OFF — jeda 3 jam (%lu menit)\n", POMPA_PH_JEDA/60000);
-      cdPH = (int)(POMPA_PH_JEDA / 1000);
     }
   }
-  if (!reqPompaPH && !pompaPHNyala) {
+  if (pompaPHNyala && now - pompaPHOnTime >= POMPA_PH_DURASI) {
     setRelay(RELAY_POMPA_PH, false);
-    if (pompaPHOffTime > 0 && now - pompaPHOffTime < POMPA_PH_JEDA)
-      cdPH = (int)((POMPA_PH_JEDA - (now - pompaPHOffTime)) / 1000);
+    pompaPHNyala   = false;
+    pompaPHOffTime = now;
+    Serial.println("[PompaPH] OFF — jeda 2 jam");
   }
-
-  // Log sisa jeda ke Serial
-  if (cdAir > 0) {
-    // Cetak hanya tiap ~60 detik untuk tidak spam Serial
-    static unsigned long lastLogAir = 0;
-    if (now - lastLogAir >= 60000UL) {
-      lastLogAir = now;
-      int m = cdAir / 60, s = cdAir % 60;
-      Serial.printf("[PompaAir] Jeda: %02d:%02d (sisa %d detik)\n", m, s, cdAir);
-    }
+  if (!pompa_ph && !pompaPHNyala) {
+    setRelay(RELAY_POMPA_PH, false);
   }
-  if (cdPH > 0) {
-    static unsigned long lastLogPH = 0;
-    if (now - lastLogPH >= 60000UL) {
-      lastLogPH = now;
-      int h = cdPH / 3600, m = (cdPH % 3600) / 60, s = cdPH % 60;
-      Serial.printf("[PompaPH]  Jeda: %02d:%02d:%02d (sisa %d detik)\n", h, m, s, cdPH);
-    }
+  if (!pompa_ph && pompaPHNyala) {
+    setRelay(RELAY_POMPA_PH, false);
+    pompaPHNyala   = false;
+    pompaPHOffTime = now;
   }
-
-  // Update countdown ke shared data
-  if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-    sd.countdown_air = cdAir;
-    sd.countdown_ph  = cdPH;
-    xSemaphoreGive(xMutex);
-  }
-}
-
-// ── terapkanAktuator: set permintaan relay, TIDAK langsung nyalakan pompa ──
-// Kipas langsung dikontrol di sini. Pompa dikontrol via tickPompa().
-void terapkanAktuator(bool kipas, bool pompa_air, bool pompa_ph) {
-  setRelay(RELAY_KIPAS, kipas);
-  // Set permintaan — tickPompa() yang akan memutuskan kapan relay nyala
-  reqPompaAir = pompa_air;
-  reqPompaPH  = pompa_ph;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -691,7 +621,7 @@ void publishMQTT() {
     xSemaphoreGive(xMutex);
   } else { return; }
 
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<640> doc;
   doc["temperature"]  = snap.suhu;
   doc["humidity"]     = snap.kelembaban;
   doc["soil"]         = snap.soil;
@@ -709,16 +639,14 @@ void publishMQTT() {
   doc["adc_soil"]     = snap.adcSoil;
   doc["waktu"]        = getWaktu();
   doc["manual_mode"]  = snap.manual_mode;
-  doc["countdown_air"]= snap.countdown_air;  // detik sisa jeda pompa air (-1=nyala, 0=siap)
-  doc["countdown_ph"] = snap.countdown_ph;   // detik sisa jeda pompa pH
   doc["wifi_ssid"]    = WiFi.SSID();
   doc["wifi_ip"]      = WiFi.localIP().toString();
   doc["wifi_rssi"]    = WiFi.RSSI();
   doc["wifi_status"]  = (WiFi.status() == WL_CONNECTED) ? "Terhubung" : "Terputus";
 
-  char buf[768];
+  char buf[640];
   serializeJson(doc, buf);
-  mqttClient.setBufferSize(768);
+  mqttClient.setBufferSize(640);
   mqttClient.publish(TOPIC_PUB, buf, true);
 }
 
@@ -902,14 +830,13 @@ void taskSensor(void* param) {
       prevKipas = curKipas; prevAir = curAir; prevPH = curPH;
 
       if (curManual) {
-        // Terapkan relay manual — set permintaan, tickPompa() yang eksekusi
+        // Terapkan relay manual LANGSUNG — tidak tunggu sensor
         terapkanAktuator(curKipas, curAir, curPH);
         // Update shared data relay agar dashboard segera dapat feedback
         if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-          sd.relay_kipas = curKipas;
-          // Pompa air/ph: state aktual dikelola tickPompa, tapi set request-nya
-          sd.relay_pompa_air = curAir && (pompaAirNyala || reqPompaAir);
-          sd.relay_pompa_ph  = curPH  && (pompaPHNyala  || reqPompaPH);
+          sd.relay_kipas     = curKipas;
+          sd.relay_pompa_air = curAir;
+          sd.relay_pompa_ph  = curPH;
           sd.manual_mode     = true;
           xSemaphoreGive(xMutex);
         }
@@ -979,8 +906,8 @@ void taskSensor(void* param) {
         sd.status_tanah  = fo.status_tanah;
         sd.status_ph     = fo.status_ph;
         sd.relay_kipas     = ki;
-        sd.relay_pompa_air = pompaAirNyala;  // state aktual dari tickPompa
-        sd.relay_pompa_ph  = pompaPHNyala;   // state aktual dari tickPompa
+        sd.relay_pompa_air = ai;
+        sd.relay_pompa_ph  = pi;
         sd.manual_mode     = isManual;
         xSemaphoreGive(xMutex);
       }
@@ -998,7 +925,6 @@ void taskSensor(void* param) {
     }
 
     vTaskDelay(pdMS_TO_TICKS(50));  // yield 50ms — fast-path relay cek tiap 50ms
-    tickPompa();  // timer pompa berjalan independen dari siklus sensor
   }
 }
 

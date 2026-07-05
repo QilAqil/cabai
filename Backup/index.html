@@ -83,16 +83,6 @@
     }
     .relay-indicator.on  { background:rgba(34,197,94,.15); color:var(--green); border:1px solid var(--green); }
     .relay-indicator.off { background:rgba(148,163,184,.08); color:var(--muted); border:1px solid var(--border); }
-    /* Countdown jeda pompa */
-    .pompa-countdown {
-      font-size:.7rem; color:var(--yellow); font-weight:600;
-      background:rgba(245,158,11,.1); border:1px solid rgba(245,158,11,.3);
-      border-radius:6px; padding:3px 8px; text-align:center;
-      min-height:22px; transition:opacity .3s;
-    }
-    .pompa-countdown.siap  { color:var(--green); background:rgba(34,197,94,.08); border-color:rgba(34,197,94,.2); }
-    .pompa-countdown.nyala { color:var(--accent); background:rgba(79,142,247,.1); border-color:rgba(79,142,247,.3); }
-    .pompa-countdown.hidden { opacity:0; pointer-events:none; }
 
     @media (max-width:1100px) {
       .sensor-grid { grid-template-columns: repeat(4, 1fr); }
@@ -268,13 +258,11 @@
       <span class="rl-icon">💦</span>
       <span class="rl-label">Pompa Irigasi</span>
       <div class="relay-indicator off" id="ri-air">OFF</div>
-      <div class="pompa-countdown hidden" id="cd-air">–</div>
     </div>
     <div class="relay-card">
       <span class="rl-icon">🧪</span>
       <span class="rl-label">Pompa Koreksi pH</span>
       <div class="relay-indicator off" id="ri-ph">OFF</div>
-      <div class="pompa-countdown hidden" id="cd-ph">–</div>
     </div>
   </div>
 
@@ -465,12 +453,6 @@ function updateDashboard(d) {
   setRelayInd('ri-air',   rA);
   setRelayInd('ri-ph',    rP);
 
-  // Countdown jeda pompa
-  const cdAir = parseInt(d.countdown_air ?? 0);
-  const cdPH  = parseInt(d.countdown_ph  ?? 0);
-  setPompaCountdown('cd-air', cdAir);
-  setPompaCountdown('cd-ph',  cdPH);
-
   document.getElementById('last-update').textContent =
     'Update: ' + new Date().toLocaleTimeString('id-ID');
 
@@ -513,31 +495,6 @@ function setRelayInd(id, on) {
   if (!e) return;
   e.textContent = on ? 'ON' : 'OFF';
   e.className   = 'relay-indicator ' + (on ? 'on' : 'off');
-}
-
-// ── Tampilkan countdown jeda pompa ───────────────────────────────
-// cdSec: -1 = sedang nyala, 0 = siap nyala, >0 = detik sisa jeda
-function setPompaCountdown(id, cdSec) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  if (cdSec === 0) {
-    // Siap nyala
-    el.textContent = '✓ Siap';
-    el.className   = 'pompa-countdown siap';
-  } else if (cdSec < 0) {
-    // Sedang nyala — sembunyikan (relay indicator sudah ON)
-    el.className = 'pompa-countdown hidden';
-  } else {
-    // Dalam jeda — tampilkan waktu mundur
-    const h = Math.floor(cdSec / 3600);
-    const m = Math.floor((cdSec % 3600) / 60);
-    const s = cdSec % 60;
-    let str = '⏳ Jeda ';
-    if (h > 0) str += h + 'j ' + String(m).padStart(2,'0') + 'm';
-    else        str += String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
-    el.textContent = str;
-    el.className   = 'pompa-countdown';
-  }
 }
 
 // ════════════════════════════════════════════════════════════════

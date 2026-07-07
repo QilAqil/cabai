@@ -58,24 +58,23 @@ const int RELAY_POMPA_PH  = 26;
 // ════════════════════════════════════════════════════════════════
 // ════════════════════════════════════════════════════════════════
 //  KALIBRASI SOIL MOISTURE (ADC 12-bit, 0–4095)
+//  Sensor ini: ADC BESAR = KERING, ADC KECIL = BASAH
+//
+//  Data terukur (sensor sudah stabil, tidak basah sisa air):
+//    ADC 2188 → tanah kering (alat manual 20%)
+//    ADC 1733 → dalam air = 100%
+//    Dihitung: SOIL_ADC_KERING = 2302 agar ADC 2188 → 20%
 //
 //  Cara kalibrasi ulang:
-//    1. Angkat sensor di udara bebas → catat SoilADC: di Serial → SOIL_ADC_KERING
-//    2. Celupkan ujung sensor ke air  → catat SoilADC: di Serial → SOIL_ADC_BASAH
+//    1. Tancapkan ke tanah kering, tunggu 2 menit sampai ADC stabil
+//       → catat SoilADC: → pakai rumus di atas untuk hitung KERING
+//    2. Celupkan ke air → catat SoilADC: → SOIL_ADC_BASAH
 //
-//  Kalibrasi saat ini:
-//    ADC 3200 → 0%   (kering di udara — dikoreksi dari data aktual)
-//    ADC 1400 → 100% (basah dalam air  — dikoreksi dari data aktual)
-//
-//  Data koreksi: sistem baca 50% saat alat manual 20%
-//  ADC saat itu ~2300. Untuk hasil 20%:
-//    map(2300, KERING, BASAH, 0, 100) = 20
-//    → (2300-KERING)/(BASAH-KERING) = 0.2
-//  Nilai di bawah disesuaikan agar lebih mendekati kondisi nyata.
-//  WAJIB ukur ulang dengan sensor di udara dan di air.
+//  Catatan: ADC sensor butuh 1-2 menit untuk stabil setelah pindah media.
+//  Jangan kalibrasi langsung setelah sensor dipindah dari basah ke kering.
 // ════════════════════════════════════════════════════════════════
-const int SOIL_ADC_KERING = 2800;   // ADC sensor di udara kering → 0%
-const int SOIL_ADC_BASAH  = 1300;   // ADC sensor dalam air       → 100%
+const int SOIL_ADC_KERING = 2302;   // dihitung: ADC 2188 → 20% dengan BASAH=1733
+const int SOIL_ADC_BASAH  = 1733;   // ADC sensor dalam air → 100%
 
 const TickType_t INTERVAL_SENSOR_MS = 15000;  // siklus sensor (ms)
 const TickType_t INTERVAL_DB_MS     = 60000;  // siklus Supabase (ms)
@@ -125,7 +124,8 @@ const int   PH_TRIM_PCT     = 25;
 const int   PH_MA_SIZE      = 5;       // dikurangi 10→5: buffer lebih kecil, tidak drag nilai lama
 const int   PH_MICRO_SIZE   = 3;       // dikurangi 5→3: respons lebih cepat
 const float PH_EMA_ALPHA    = 0.35f;   // dinaikkan 0.15→0.35: ikuti nilai baru lebih agresif
-const float PH_NOISE_GATE   = 1.20f;   // dinaikkan 0.80→1.20: jangan reset saat nilai berubah wajar
+const float PH_NOISE_GATE   = 2.00f;   // dinaikkan 1.20→2.00: toleransi interferensi galvanik
+                                        // saat sensor soil dan pH dalam 1 wadah (delta ~1.3 unit)
 const float PH_RATE_LIMIT   = 0.10f;   // dinaikkan 0.02→0.10: kejar nilai nyata, tidak merangkak lambat
 const float PH_HYSTERESIS   = 0.03f;   // dikurangi 0.05→0.03: update lebih sering
 const float PH_TEMP_COEF    = 0.003f;

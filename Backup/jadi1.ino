@@ -115,7 +115,7 @@ const unsigned long POMPA_PH_JEDA    = 10800000UL; // 3 jam
 // ════════════════════════════════════════════════════════════════
 struct PhCalPoint { int adc; float ph; };
 const PhCalPoint PH_CAL[3] = {
-  { 1082, 4.01f },   // ← dikoreksi: ADC aktual elektroda di ~pH 4 = 1080-1083
+  { 1062, 4.01f },   // ← verifikasi dengan buffer pH 4.01
   {  689, 6.86f },   // ← dikoreksi: ADC 689 = pH 6.80 alat manual
   {  520, 9.18f },   // ← estimasi proporsional, ukur ulang dengan buffer 9.18
 };
@@ -130,8 +130,7 @@ const float PH_RATE_LIMIT   = 0.10f;   // dinaikkan 0.02→0.10: kejar nilai nya
 const float PH_HYSTERESIS   = 0.03f;   // dikurangi 0.05→0.03: update lebih sering
 const float PH_TEMP_COEF    = 0.003f;
 const float PH_TEMP_REF     = 25.0f;
-const int   PH_ADC_BATAS    = 1250;  // dinaikkan 1080→1250: ADC normal elektroda ~1085-1090,
-                                     // threshold lama terlalu rendah → false "probe lepas"
+const int   PH_ADC_BATAS    = 1080;
 const int   PH_NOTANCAP_CNT = 5;
 const int   PH_VARIANSI_MAX = 250;
 const int   PH_WARMUP_N     = 3;       // dinaikkan 2→3: beri lebih banyak siklus untuk stabilkan kalibrasi baru

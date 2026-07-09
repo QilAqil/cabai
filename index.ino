@@ -288,7 +288,6 @@ FuzzyOutput inferensiFuzzy(float suhu, float soil, float pH) {
   FuzzyOutput out;
   float mu_st = fuzzyTempTinggi(suhu);
   float mu_tk = fuzzySoilKering(soil);
-  float mu_tl = fuzzySoilLembab(soil);
   float mu_pa = fuzzyPhAsam(pH);
 
   out.status_suhu  = fuzzyTempStatus(suhu);
@@ -299,13 +298,11 @@ FuzzyOutput inferensiFuzzy(float suhu, float soil, float pH) {
   out.mu_kipas = mu_st;
   out.kipas    = (mu_st > 0.5f);
 
-  // R2: tanah Kering | R3: tanah Lembab AND suhu Tinggi → Pompa Air ON
-  float r2 = (soil <= 0.0f) ? 0.0f : mu_tk;
-  float r3 = (soil <= 0.0f) ? 0.0f : min(mu_tl, mu_st);
-  out.mu_pompa_air = max(r2, r3);
+  // R2: tanah Kering → Pompa Air ON
+  out.mu_pompa_air = (soil <= 0.0f) ? 0.0f : mu_tk;
   out.pompa_air    = (soil > 0.0f && out.mu_pompa_air > 0.4f);
 
-  // R4: pH Asam → Pompa pH ON
+  // R3: pH Asam → Pompa pH ON
   out.mu_pompa_ph = (pH <= 0.0f) ? 0.0f : mu_pa;
   out.pompa_ph    = (pH > 0.0f && mu_pa > 0.4f);
 

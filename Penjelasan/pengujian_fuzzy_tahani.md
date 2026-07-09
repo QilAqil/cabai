@@ -54,13 +54,12 @@ sensor dapat dilihat pada tabel berikut:
 
 | No | Tanggal | pH Tanah | Suhu (°C) | Kelembapan Tanah (%) | Tujuan uji |
 |----|---------|----------|-----------|----------------------|------------|
-| 6  | 05/7/2026 14:00 | 4.80 | 22.0 | 70 | R4 — pH asam → Pompa pH ON |
+| 6  | 05/7/2026 14:00 | 4.80 | 22.0 | 70 | R3 — pH asam → Pompa pH ON |
 | 7  | 05/7/2026 14:01 | 6.50 | 32.0 | 70 | R1 — suhu tinggi → Kipas ON |
 | 8  | 05/7/2026 14:02 | 6.50 | 22.0 | 35 | R2 — tanah kering → Pompa Air ON |
-| 9  | 05/7/2026 14:03 | 6.50 | 32.0 | 55 | R3 — lembab AND tinggi → Pompa Air ON |
-| 10 | 05/7/2026 14:04 | 5.20 | 22.0 | 35 | R2 + R4 → Pompa Air & Pompa pH ON |
-| 11 | 05/7/2026 14:05 | 6.50 | 30.0 | 70 | R1 — suhu agak tinggi (μ Tinggi = 0,75) |
-| 12 | 05/7/2026 14:06 | 5.60 | 22.0 | 45 | Ambang — μ Asam = 0,40 (OFF), μ Kering = 0,50 (ON) |
+| 9  | 05/7/2026 14:03 | 5.20 | 22.0 | 35 | R2 + R3 → Pompa Air & Pompa pH ON |
+| 10 | 05/7/2026 14:04 | 6.50 | 30.0 | 70 | R1 — suhu agak tinggi (μ Tinggi = 0,75) |
+| 11 | 05/7/2026 14:05 | 5.60 | 22.0 | 45 | Ambang — μ Asam = 0,40 (OFF), μ Kering = 0,50 (ON) |
 
 ---
 
@@ -268,13 +267,12 @@ rule base yang telah dirancang:
 |----|------|---------|----------|---------------|----------|
 | R1 | IF suhu Tinggi | μ_Tinggi | — | μ_Tinggi | KIPAS |
 | R2 | IF tanah Kering | μ_Kering | — | μ_Kering | POMPA AIR |
-| R3 | IF tanah Lembab AND suhu Tinggi | μ_Lembab, μ_Tinggi | MIN | min(μ_Lembab, μ_Tinggi) | POMPA AIR |
-| R4 | IF pH Asam | μ_Asam | — | μ_Asam | POMPA pH |
+| R3 | IF pH Asam | μ_Asam | — | μ_Asam | POMPA pH |
 
 **Rumus Excel untuk Fire Strength:**
 ```excel
 Kipas    : =L2                           (μ_Tinggi)
-PompaAir : =MAX(N2, MIN(O2, L2))         (OR dari R2 dan R3)
+PompaAir : =N2                           (μ_Kering — R2)
 PompaPH  : =F2                           (μ_Asam)
 ```
 
@@ -282,18 +280,18 @@ PompaPH  : =F2                           (μ_Asam)
 
 | No | μ Kipas | μ Pompa Air | μ Pompa pH | Kipas | Pompa Air | Pompa pH |
 |----|---------|-------------|-----------|-------|-----------|---------| 
-| 1 | 0.00 | max(0, min(1.00, 0)) = **0.00** | **0.00** | OFF | OFF | OFF |
-| 2 | 0.00 | max(0, min(0.90, 0)) = **0.00** | **0.00** | OFF | OFF | OFF |
-| 3 | 0.00 | max(0, min(1.00, 0)) = **0.00** | **0.00** | OFF | OFF | OFF |
-| 4 | 0.00 | max(0, min(1.00, 0)) = **0.00** | **0.00** | OFF | OFF | OFF |
-| 5 | 0.00 | max(0.10, min(0.90, 0)) = **0.10** | **0.05** | OFF | OFF | OFF |
-| 6 | 0.00 | 0.00 | **1.00** | OFF | OFF | **ON** |
-| 7 | **1.00** | max(0, min(1.00, 1.00)) = **1.00** | 0.00 | **ON** | **ON** | OFF |
-| 8 | 0.00 | **1.00** | 0.00 | OFF | **ON** | OFF |
-| 9 | **1.00** | max(0, min(1.00, 1.00)) = **1.00** | 0.00 | **ON** | **ON** | OFF |
-| 10 | 0.00 | **1.00** | **0.80** | OFF | **ON** | **ON** |
-| 11 | **0.75** | 0.00 | 0.00 | **ON** | OFF | OFF |
-| 12 | 0.00 | **0.50** | **0.40** | OFF | **ON** | OFF |
+| 1 | 0.00 | μ_Kering = **0.00** | **0.00** | OFF | OFF | OFF |
+| 2 | 0.00 | μ_Kering = **0.00** | **0.00** | OFF | OFF | OFF |
+| 3 | 0.00 | μ_Kering = **0.00** | **0.00** | OFF | OFF | OFF |
+| 4 | 0.00 | μ_Kering = **0.00** | **0.00** | OFF | OFF | OFF |
+| 5 | 0.00 | μ_Kering = **0.10** | **0.05** | OFF | OFF | OFF |
+| 6 | 0.00 | μ_Kering = **0.00** | **1.00** | OFF | OFF | **ON** |
+| 7 | **1.00** | μ_Kering = **0.00** | 0.00 | **ON** | OFF | OFF |
+| 8 | 0.00 | μ_Kering = **1.00** | 0.00 | OFF | **ON** | OFF |
+| 9 | **1.00** | μ_Kering = **0.00** | 0.00 | **ON** | OFF | OFF |
+| 10 | 0.00 | μ_Kering = **1.00** | **0.80** | OFF | **ON** | **ON** |
+| 11 | **0.75** | μ_Kering = **0.00** | 0.00 | **ON** | OFF | OFF |
+| 12 | 0.00 | μ_Kering = **0.50** | **0.40** | OFF | **ON** | OFF |
 
 **Threshold keputusan:**
 - Kipas ON jika μ_Kipas > **0.50**
@@ -315,10 +313,9 @@ PompaPH  : =F2                           (μ_Asam)
 | 6 | 4.80 | 22.0 | 70 | 0.00 | 0.00 | 1.00 | 0.00 | 1.00 | 1.00 | ✓ |
 | 7 | 6.50 | 32.0 | 70 | 1.00 | 0.00 | 1.00 | 1.00 | 1.00 | 1.00 | ✓ |
 | 8 | 6.50 | 22.0 | 35 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 0.00 | ✓ |
-| 9 | 6.50 | 32.0 | 55 | 1.00 | 0.00 | 1.00 | 1.00 | 1.00 | 1.00 | ✓ |
-| 10 | 5.20 | 22.0 | 35 | 0.00 | 0.80 | 1.00 | 1.00 | 1.00 | 0.00 | ✓ |
-| 11 | 6.50 | 30.0 | 70 | 1.00 | 0.75 | 1.00 | 0.75 | 1.00 | 1.00 | ✓ |
-| 12 | 5.60 | 22.0 | 45 | 0.40 | 1.00 | 0.50 | 0.40 | 1.00 | 0.50 | ✓ |
+| 9 | 5.20 | 22.0 | 35 | 0.00 | 0.80 | 1.00 | 1.00 | 1.00 | 0.00 | ✓ |
+| 10 | 6.50 | 30.0 | 70 | 1.00 | 0.75 | 1.00 | 0.75 | 1.00 | 1.00 | ✓ |
+| 11 | 5.60 | 22.0 | 45 | 0.40 | 1.00 | 0.50 | 0.40 | 1.00 | 0.50 | ✓ |
 
 > **Keterangan kolom μ (baris 1–5):**
 > - μ pH   = nilai derajat keanggotaan himpunan **Normal** (dominan, karena pH 5.95–6.90)
@@ -397,9 +394,9 @@ membuktikan rule base **dapat mengaktifkan aktuator** saat kondisi di luar optim
 | No | pH | Suhu | Tanah | Hasil pH | Hasil Suhu | Hasil Tanah | μ Kipas | μ PompaAir | μ PompaPH | Kipas | PompaAir | PompaPH |
 |----|-----|------|-------|----------|------------|-------------|---------|------------|-----------|-------|----------|---------|
 | 6 | 4.80 | 22.0 | 70 | Asam | Rendah | Lembab | 0.00 | 0.00 | **1.00** | OFF | OFF | **ON** |
-| 7 | 6.50 | 32.0 | 70 | Normal | Tinggi | Lembab | **1.00** | **1.00** | 0.00 | **ON** | **ON** | OFF |
+| 7 | 6.50 | 32.0 | 70 | Normal | Tinggi | Lembab | **1.00** | 0.00 | 0.00 | **ON** | OFF | OFF |
 | 8 | 6.50 | 22.0 | 35 | Normal | Rendah | Kering | 0.00 | **1.00** | 0.00 | OFF | **ON** | OFF |
-| 9 | 6.50 | 32.0 | 55 | Normal | Tinggi | Lembab | **1.00** | **1.00** | 0.00 | **ON** | **ON** | OFF |
+| 9 | 6.50 | 32.0 | 55 | Normal | Tinggi | Lembab | **1.00** | 0.00 | 0.00 | **ON** | OFF | OFF |
 | 10 | 5.20 | 22.0 | 35 | Asam | Rendah | Kering | 0.00 | **1.00** | **0.80** | OFF | **ON** | **ON** |
 | 11 | 6.50 | 30.0 | 70 | Normal | Tinggi | Lembab | **0.75** | 0.00 | 0.00 | **ON** | OFF | OFF |
 | 12 | 5.60 | 22.0 | 45 | Asam | Rendah | Kering | 0.00 | **0.50** | **0.40** | OFF | **ON** | OFF |
@@ -411,10 +408,10 @@ membuktikan rule base **dapat mengaktifkan aktuator** saat kondisi di luar optim
 pH = 4,80 ≤ 5 → μ Asam = 1,00 → μ PompaPH = 1,00 > 0,40 → Pompa pH ON
 ```
 
-**Baris 7 — suhu tinggi + tanah lembab (R1 + R3)**
+**Baris 7 — suhu tinggi (R1)**
 ```
 Suhu = 32 °C ≥ 31 → μ Tinggi = 1,00 → Kipas ON
-μ PompaAir = MAX(0, MIN(1,00, 1,00)) = 1,00 → Pompa Air ON (R3: lembab AND tinggi)
+Tanah = 70 % (Lembab) → μ Kering = 0 → Pompa Air OFF
 ```
 
 **Baris 8 — tanah kering (R2)**
@@ -422,10 +419,10 @@ Suhu = 32 °C ≥ 31 → μ Tinggi = 1,00 → Kipas ON
 Tanah = 35 % ≤ 40 → μ Kering = 1,00 → μ PompaAir = 1,00 > 0,40 → Pompa Air ON
 ```
 
-**Baris 9 — R3 tanpa kering**
+**Baris 9 — suhu tinggi, tanah lembab**
 ```
-Tanah = 55 % (Lembab), Suhu = 32 °C (Tinggi)
-μ PompaAir = MAX(0, MIN(1,00, 1,00)) = 1,00 → Pompa Air ON via R3
+Suhu = 32 °C ≥ 31 → μ Tinggi = 1,00 → Kipas ON
+Tanah = 55 % (Lembab) → μ Kering = 0 → Pompa Air OFF
 ```
 
 **Baris 10 — kombinasi R2 + R4**
@@ -465,16 +462,15 @@ pada sistem telah berjalan sesuai dengan aturan yang dirancang.
 - Tanah 49–71 % → himpunan **Lembab** (μ_Kering ≤ 0,10) → Pompa Air **OFF**
 - Semua aktuator **OFF** karena kondisi lingkungan sudah mendekati optimal — **sesuai desain**
 
-**Skenario ekstrem (baris 6–12):**
-- pH ≤ 5,0 → Pompa pH **ON** (baris 6, 10)
-- Suhu ≥ 30 °C → Kipas **ON** (baris 7, 9, 11)
-- Tanah ≤ 40 % → Pompa Air **ON** (baris 8, 10)
-- Tanah lembab + suhu tinggi → Pompa Air **ON** via R3 (baris 7, 9)
-- Baris 12 membuktikan **ambang batas** (> 0,40 / > 0,50): μ = 0,40 → OFF, μ = 0,50 → ON
+**Skenario ekstrem (baris 6–11):**
+- pH ≤ 5,0 → Pompa pH **ON** (baris 6, 9)
+- Suhu ≥ 30 °C → Kipas **ON** (baris 7, 10)
+- Tanah ≤ 40 % → Pompa Air **ON** (baris 8, 9)
+- Baris 11 membuktikan **ambang batas** (> 0,40 / > 0,50): μ = 0,40 → OFF, μ = 0,50 → ON
 
 **Kesimpulan akhir:** Hasil Excel pada data riil (semua OFF) dan skenario ekstrem (aktuator
 ON saat kondisi ekstrem) **konsisten** dengan rule base Fuzzy Tahani di `index.ino`.
-Perhitungan manual dan sistem **sesuai** untuk seluruh 12 baris uji.
+Perhitungan manual dan sistem **sesuai** untuk seluruh 11 baris uji.
 
 ---
 
@@ -571,9 +567,9 @@ fungsi keanggotaan yang telah dirancang.
 =L2
 ```
 
-**Kolom S — μ Pompa Air (Fire Strength R2 OR R3):**
+**Kolom S — μ Pompa Air (Fire Strength R2):**
 ```
-=MAX(N2, MIN(O2, L2))
+=N2
 ```
 
 **Kolom T — μ Pompa pH (Fire Strength R4):**
@@ -608,15 +604,14 @@ fungsi keanggotaan yang telah dirancang.
 | 4 | 04/7/2026 13:22 | 6.31 | 23.1 | 58 | 0.00 | **1.00** | 0.00 | **Normal** | **1.00** | 0.00 | 0.00 | **Rendah** | 0.00 | **1.00** | 0.00 | **Lembab** | 0.00 | 0.00 | 0.00 | OFF | OFF | OFF |
 | 5 | 05/7/2026 13:21 | 5.95 | 24.4 | 49 | **0.05** | **0.90** | 0.00 | **Normal** | **0.87** | 0.13 | 0.00 | **Rendah** | 0.10 | **0.90** | 0.00 | **Lembab** | 0.00 | 0.10 | 0.05 | OFF | OFF | OFF |
 | 6 | 05/7/2026 14:00 | 4.80 | 22.0 | 70 | **1.00** | 0.00 | 0.00 | **Asam** | **1.00** | 0.00 | 0.00 | **Rendah** | 0.00 | **1.00** | 0.00 | **Lembab** | 0.00 | 0.00 | **1.00** | OFF | OFF | **ON** |
-| 7 | 05/7/2026 14:01 | 6.50 | 32.0 | 70 | 0.00 | **1.00** | 0.00 | **Normal** | 0.00 | 0.00 | **1.00** | **Tinggi** | 0.00 | **1.00** | 0.00 | **Lembab** | **1.00** | **1.00** | 0.00 | **ON** | **ON** | OFF |
+| 7 | 05/7/2026 14:01 | 6.50 | 32.0 | 70 | 0.00 | **1.00** | 0.00 | **Normal** | 0.00 | 0.00 | **1.00** | **Tinggi** | 0.00 | **1.00** | 0.00 | **Lembab** | **1.00** | 0.00 | 0.00 | **ON** | OFF | OFF |
 | 8 | 05/7/2026 14:02 | 6.50 | 22.0 | 35 | 0.00 | **1.00** | 0.00 | **Normal** | **1.00** | 0.00 | 0.00 | **Rendah** | **1.00** | 0.00 | 0.00 | **Kering** | 0.00 | **1.00** | 0.00 | OFF | **ON** | OFF |
-| 9 | 05/7/2026 14:03 | 6.50 | 32.0 | 55 | 0.00 | **1.00** | 0.00 | **Normal** | 0.00 | 0.00 | **1.00** | **Tinggi** | 0.00 | **1.00** | 0.00 | **Lembab** | **1.00** | **1.00** | 0.00 | **ON** | **ON** | OFF |
-| 10 | 05/7/2026 14:04 | 5.20 | 22.0 | 35 | **0.80** | 0.00 | 0.00 | **Asam** | **1.00** | 0.00 | 0.00 | **Rendah** | **1.00** | 0.00 | 0.00 | **Kering** | 0.00 | **1.00** | **0.80** | OFF | **ON** | **ON** |
-| 11 | 05/7/2026 14:05 | 6.50 | 30.0 | 70 | 0.00 | **1.00** | 0.00 | **Normal** | 0.00 | 0.50 | **0.75** | **Tinggi** | 0.00 | **1.00** | 0.00 | **Lembab** | **0.75** | 0.00 | 0.00 | **ON** | OFF | OFF |
-| 12 | 05/7/2026 14:06 | 5.60 | 22.0 | 45 | **0.40** | 0.20 | 0.00 | **Asam** | **1.00** | 0.00 | 0.00 | **Rendah** | **0.50** | **0.50** | 0.00 | **Kering** | 0.00 | **0.50** | **0.40** | OFF | **ON** | OFF |
+| 9 | 05/7/2026 14:03 | 5.20 | 22.0 | 35 | **0.80** | 0.00 | 0.00 | **Asam** | **1.00** | 0.00 | 0.00 | **Rendah** | **1.00** | 0.00 | 0.00 | **Kering** | 0.00 | **1.00** | **0.80** | OFF | **ON** | **ON** |
+| 10 | 05/7/2026 14:04 | 6.50 | 30.0 | 70 | 0.00 | **1.00** | 0.00 | **Normal** | 0.00 | 0.50 | **0.75** | **Tinggi** | 0.00 | **1.00** | 0.00 | **Lembab** | **0.75** | 0.00 | 0.00 | **ON** | OFF | OFF |
+| 11 | 05/7/2026 14:05 | 5.60 | 22.0 | 45 | **0.40** | 0.20 | 0.00 | **Asam** | **1.00** | 0.00 | 0.00 | **Rendah** | **0.50** | **0.50** | 0.00 | **Kering** | 0.00 | **0.50** | **0.40** | OFF | **ON** | OFF |
 
-> **Catatan baris 11:** μ Sedang = (31 − 30) / 4 = 0,25; μ Tinggi = (30 − 27) / 4 = **0,75** (dominan Tinggi).
-> **Catatan baris 12:** μ Asam = μ Kering = 0,40/0,50 di ambang; Pompa pH OFF karena 0,40 tidak > 0,40.
+> **Catatan baris 10:** μ Sedang = (31 − 30) / 4 = 0,25; μ Tinggi = (30 − 27) / 4 = **0,75** (dominan Tinggi).
+> **Catatan baris 11:** μ Asam = μ Kering = 0,40/0,50 di ambang; Pompa pH OFF karena 0,40 tidak > 0,40.
 
 ---
 
@@ -637,4 +632,4 @@ fungsi keanggotaan yang telah dirancang.
 >
 > **Kelompok data:**
 > - Baris 2–6 (No. 1–5): data riil sensor — expect semua aktuator OFF
-> - Baris 7–13 (No. 6–12): skenario ekstrem — expect aktuator ON sesuai rule
+> - Baris 7–12 (No. 6–11): skenario ekstrem — expect aktuator ON sesuai rule

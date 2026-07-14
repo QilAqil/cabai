@@ -59,9 +59,10 @@ sensor dapat dilihat pada tabel berikut:
 | 6  | 05/7/2026 14:00  | 4.80     | 22.0      | 70                   | R3 — pH asam → Pompa pH ON                        |
 | 7  | 05/7/2026 14:01  | 6.50     | 32.0      | 70                   | R1 — suhu tinggi → Kipas ON                       |
 | 8  | 05/7/2026 14:02  | 6.50     | 22.0      | 35                   | R2 — tanah kering → Pompa Air ON                  |
-| 9  | 05/7/2026 14:03  | 5.20     | 22.0      | 35                   | R2 + R3 → Pompa Air & Pompa pH ON                 |
+| 9  | 05/7/2026 14:03  | 5.20     | 22.0      | 35                   | R2 + R3 → Pompa Air & Pompa pH ON (asam)          |
 | 10 | 05/7/2026 14:04  | 6.50     | 30.0      | 70                   | R1 — suhu agak tinggi (μ Tinggi = 0,75)           |
 | 11 | 05/7/2026 14:05  | 5.60     | 22.0      | 45                   | Ambang — μ Asam = 0,40 (OFF), μ Kering = 0,50 (ON)|
+| 12 | 05/7/2026 14:06  | 8.00     | 22.0      | 58                   | R3 — pH basa → Pompa pH ON                        |
 
 ---
 
@@ -262,17 +263,17 @@ Hasil    : argmax(0.10, 0.90, 0.00) = Lembab
 Setelah fuzzifikasi, sistem membentuk query fuzzy berdasarkan
 rule base yang telah dirancang:
 
-| No | Rule | Kondisi        | Operator | Fire Strength | Aktuator  |
-|----|------|----------------|----------|---------------|-----------|
-| R1 | IF suhu Tinggi  | μ Tinggi | —        | μ Tinggi      | KIPAS     |
-| R2 | IF tanah Kering | μ Kering | —        | μ Kering      | POMPA AIR |
-| R3 | IF pH Asam      | μ Asam   | —        | μ Asam        | POMPA pH  |
+| No | Rule | Kondisi                     | Operator | Fire Strength        | Aktuator  |
+|----|------|-----------------------------|----------|----------------------|-----------|
+| R1 | IF suhu Tinggi              | μ Tinggi           | —   | μ Tinggi             | KIPAS     |
+| R2 | IF tanah Kering             | μ Kering           | —   | μ Kering             | POMPA AIR |
+| R3 | IF pH Asam ATAU pH Basa     | μ Asam, μ Basa     | MAX | max(μ Asam, μ Basa)  | POMPA pH  |
 
 **Rumus Excel untuk Fire Strength:**
 ```excel
-Kolom R — μ Kipas    : =L2    (μ Tinggi)
-Kolom S — μ Pompa Air: =N2    (μ Kering)
-Kolom T — μ Pompa pH : =F2    (μ Asam)
+Kolom R — μ Kipas    : =L2          (μ Tinggi)
+Kolom S — μ Pompa Air: =N2          (μ Kering)
+Kolom T — μ Pompa pH : =MAX(F2,H2)  (max dari μ Asam dan μ Basa)
 ```
 
 **Rumus Excel untuk Keputusan Aktuator:**
@@ -302,6 +303,7 @@ Kolom W — Pompa pH : =IF(T2>0.4,"ON","OFF")
 | 9  | 0.00    | 1.00        | 0.80       | OFF   | **ON**    | **ON**   |
 | 10 | 0.75    | 0.00        | 0.00       | **ON**| OFF       | OFF      |
 | 11 | 0.00    | 0.50        | 0.40       | OFF   | **ON**    | OFF      |
+| 12 | 0.00    | 0.00        | 1.00       | OFF   | OFF       | **ON**   |
 
 ---
 
@@ -320,12 +322,13 @@ Kolom W — Pompa pH : =IF(T2>0.4,"ON","OFF")
 | 9  | 5.20 | 22.0 | 35    | 0.80          | 1.00            | 1.00             | 0.80          | 1.00            | 1.00             | ✓      |
 | 10 | 6.50 | 30.0 | 70    | 1.00          | 0.75            | 1.00             | 1.00          | 0.75            | 1.00             | ✓      |
 | 11 | 5.60 | 22.0 | 45    | 0.40          | 1.00            | 0.50             | 0.40          | 1.00            | 0.50             | ✓      |
+| 12 | 8.00 | 22.0 | 58    | 1.00          | 1.00            | 1.00             | 1.00          | 1.00            | 1.00             | ✓      |
 
 > **Keterangan kolom μ:**  
 > Nilai yang ditampilkan adalah derajat keanggotaan **himpunan dominan** per variabel.  
-> - μ pH   = μ Normal (baris 1–5, 7–8, 10–11), μ Asam (baris 6, 9)  
-> - μ Suhu = μ Rendah (baris 1–5, 6, 8–9, 11), μ Tinggi (baris 7, 10)  
-> - μ Tanah = μ Lembab (baris 1–4, 6–7, 10), μ Kering (baris 8–9, 11), μ Lembab (baris 5)
+> - μ pH   = μ Normal (baris 1–5, 7–8, 10–11), μ Asam (baris 6, 9), μ Basa (baris 12)  
+> - μ Suhu = μ Rendah (baris 1–6, 8–9, 11–12), μ Tinggi (baris 7, 10)  
+> - μ Tanah = μ Lembab (baris 1–4, 6–7, 10, 12), μ Kering (baris 8–9, 11), μ Lembab (baris 5)
 
 ---
 
@@ -358,15 +361,15 @@ Seluruh aktuator OFF — **bukan kesalahan perhitungan**, melainkan sesuai desai
 Aturan hanya merespons kondisi ekstrem:
 
 ```
-μ Kipas    = μ Tinggi    (R1)
-μ Pompa Air = μ Kering   (R2)
-μ Pompa pH  = μ Asam     (R3)
+μ Kipas     = μ Tinggi              (R1)
+μ Pompa Air = μ Kering              (R2)
+μ Pompa pH  = max(μ Asam, μ Basa)   (R3)
 ```
 
-Pada baris 1–4: μ Tinggi = 0, μ Kering = 0, μ Asam = 0 → fire strength = 0 → semua OFF.
+Pada baris 1–4: μ Tinggi = 0, μ Kering = 0, μ Asam = 0, μ Basa = 0 → fire strength = 0 → semua OFF.
 
-Pada baris 5: μ Kering = 0.10 dan μ Asam = 0.05, keduanya di bawah ambang 0.40
-→ Pompa Air dan Pompa pH tetap OFF.
+Pada baris 5: μ Kering = 0.10 dan max(μ Asam, μ Basa) = max(0.05, 0.00) = 0.05,
+keduanya di bawah ambang 0.40 → Pompa Air dan Pompa pH tetap OFF.
 
 ### f.3 Contoh perhitungan manual baris 5 (titik transisi)
 
@@ -375,13 +378,14 @@ Input: pH = 5.95 | Suhu = 24.4°C | Tanah = 49%
 
 μ Asam   = (6 − 5.95) / 1      = 0.05
 μ Normal = (5.95 − 5.5) / 0.5  = 0.90  → Hasil pH   : Normal
+μ Basa   = 5.95 ≤ 7             = 0.00
 μ Rendah = (27 − 24.4) / 3     = 0.87  → Hasil Suhu  : Rendah
 μ Kering = (50 − 49) / 10      = 0.10
 μ Lembab = (49 − 40) / 10      = 0.90  → Hasil Tanah : Lembab
 
-μ Kipas    = μ Tinggi = 0.00           → OFF (threshold > 0.50)
-μ Pompa Air = μ Kering = 0.10          → OFF (threshold > 0.40)
-μ Pompa pH  = μ Asam  = 0.05          → OFF (threshold > 0.40)
+μ Kipas    = μ Tinggi               = 0.00  → OFF (threshold > 0.50)
+μ Pompa Air = μ Kering              = 0.10  → OFF (threshold > 0.40)
+μ Pompa pH  = max(μ Asam, μ Basa)  = max(0.05, 0.00) = 0.05  → OFF (threshold > 0.40)
 ```
 
 ---
@@ -401,12 +405,14 @@ saat kondisi lingkungan di luar rentang optimal.
 | 9  | 5.20 | 22.0 | 35    | Asam     | Rendah     | Kering      | 0.00    | 1.00        | 0.80       | OFF    | **ON**    | **ON**   |
 | 10 | 6.50 | 30.0 | 70    | Normal   | Tinggi     | Lembab      | 0.75    | 0.00        | 0.00       | **ON** | OFF       | OFF      |
 | 11 | 5.60 | 22.0 | 45    | Asam     | Rendah     | Kering      | 0.00    | 0.50        | 0.40       | OFF    | **ON**    | OFF      |
+| 12 | 8.00 | 22.0 | 58    | Basa     | Rendah     | Lembab      | 0.00    | 0.00        | 1.00       | OFF    | OFF       | **ON**   |
 
 ### g.2 Penjelasan per skenario
 
 **Baris 6 — pH asam (R3)**
 ```
-pH = 4.80 ≤ 5  → μ Asam = 1.00 > 0.40  → Pompa pH ON
+pH = 4.80 ≤ 5  → μ Asam = 1.00, μ Basa = 0.00
+μ Pompa pH = max(1.00, 0.00) = 1.00 > 0.40  → Pompa pH ON
 ```
 
 **Baris 7 — suhu tinggi (R1)**
@@ -420,10 +426,11 @@ Tanah = 70% (Lembab)  → μ Kering = 0.00  → Pompa Air OFF
 Tanah = 35% ≤ 40  → μ Kering = 1.00 > 0.40  → Pompa Air ON
 ```
 
-**Baris 9 — kombinasi R2 + R3**
+**Baris 9 — kombinasi R2 + R3 (asam)**
 ```
 Tanah = 35% ≤ 40  → μ Kering = 1.00 > 0.40  → Pompa Air ON
-pH = 5.20  → μ Asam = (6 − 5.2) / 1 = 0.80 > 0.40  → Pompa pH ON
+pH = 5.20  → μ Asam = (6 − 5.2) / 1 = 0.80, μ Basa = 0.00
+μ Pompa pH = max(0.80, 0.00) = 0.80 > 0.40  → Pompa pH ON
 ```
 
 **Baris 10 — suhu agak tinggi (R1, μ parsial)**
@@ -433,11 +440,18 @@ Suhu = 30°C  → μ Tinggi = (30 − 27) / 4 = 0.75 > 0.50  → Kipas ON
 
 **Baris 11 — uji ambang batas ON/OFF**
 ```
-pH = 5.60  → μ Asam = (6 − 5.6) / 1 = 0.40
+pH = 5.60  → μ Asam = (6 − 5.6) / 1 = 0.40, μ Basa = 0.00
+μ Pompa pH = max(0.40, 0.00) = 0.40
              0.40 tidak > 0.40  → Pompa pH OFF  (ambang ketat, bukan ≥)
 
 Tanah = 45%  → μ Kering = (50 − 45) / 10 = 0.50
               0.50 > 0.40  → Pompa Air ON
+```
+
+**Baris 12 — pH basa (R3)**
+```
+pH = 8.00 ≥ 7.5  → μ Basa = 1.00, μ Asam = 0.00
+μ Pompa pH = max(0.00, 1.00) = 1.00 > 0.40  → Pompa pH ON
 ```
 
 ---
@@ -501,7 +515,7 @@ pertanian cerdas berbasis IoT untuk greenhouse cabai rawit.*
 | Q     | Hasil Tanah | `=IF(AND(N2>=O2,N2>=P2),"Kering",IF(O2>=P2,"Lembab","Basah"))` |
 | R     | μ Kipas     | `=L2` |
 | S     | μ PompaAir  | `=N2` |
-| T     | μ PompaPH   | `=F2` |
+| T     | μ PompaPH   | `=MAX(F2,H2)` |
 | U     | Kipas       | `=IF(R2>0.5,"ON","OFF")` |
 | V     | PompaAir    | `=IF(S2>0.4,"ON","OFF")` |
 | W     | PompaPH     | `=IF(T2>0.4,"ON","OFF")` |
@@ -521,9 +535,11 @@ pertanian cerdas berbasis IoT untuk greenhouse cabai rawit.*
 | 9  | 05/7/2026 14:03 | 5.20 | 22.0 | 35    | 0.80   | 0.00     | 0.00   | Asam     | 1.00     | 0.00     | 0.00     | Rendah     | 1.00     | 0.00     | 0.00    | Kering      | 0.00    | 1.00       | 0.80      | OFF    | **ON**   | **ON**  |
 | 10 | 05/7/2026 14:04 | 6.50 | 30.0 | 70    | 0.00   | 1.00     | 0.00   | Normal   | 0.00     | 0.25     | 0.75     | Tinggi     | 0.00     | 1.00     | 0.00    | Lembab      | 0.75    | 0.00       | 0.00      | **ON** | OFF      | OFF     |
 | 11 | 05/7/2026 14:05 | 5.60 | 22.0 | 45    | 0.40   | 0.20     | 0.00   | Asam     | 1.00     | 0.00     | 0.00     | Rendah     | 0.50     | 0.50     | 0.00    | Kering      | 0.00    | 0.50       | 0.40      | OFF    | **ON**   | OFF     |
+| 12 | 05/7/2026 14:06 | 8.00 | 22.0 | 58    | 0.00   | 0.00     | 1.00   | Basa     | 1.00     | 0.00     | 0.00     | Rendah     | 0.00     | 1.00     | 0.00    | Lembab      | 0.00    | 0.00       | 1.00      | OFF    | OFF      | **ON**  |
 
 > **Catatan baris 10:** μ Sedang = (31 − 30) / 4 = 0.25 ; μ Tinggi = (30 − 27) / 4 = **0.75** → Hasil Suhu: Tinggi  
-> **Catatan baris 11:** μ Asam = 0.40 → Pompa pH **OFF** (ambang **>** 0.40, bukan ≥) ; μ Kering = 0.50 → Pompa Air **ON**
+> **Catatan baris 11:** μ Asam = 0.40, μ Basa = 0.00 → max(0.40, 0.00) = 0.40 → Pompa pH **OFF** (ambang **>** 0.40, bukan ≥)  
+> **Catatan baris 12:** pH = 8.00 ≥ 7.5 → μ Basa = 1.00, μ Asam = 0.00 → max(0.00, 1.00) = 1.00 → Pompa pH **ON**
 
 ### Cara Menggunakan di Microsoft Excel
 

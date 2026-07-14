@@ -1108,25 +1108,28 @@ void taskSensor(void* param) {
       float t = dht.readTemperature();
       float h = dht.readHumidity();
 
-      // 2. pH dulu — baca sebelum soil agar DMS tidak mengganggu ADC soil
-      //    Urutan: pH → jeda → soil (bukan sebaliknya)
-      float suhuLokal = (!isnan(t)) ? t : 0.0f;
-      float phBaru    = bacaPH(suhuLokal);
+      // 2. Soil — dengan settling delay internal
+      float soilVal = bacaSoil();
 
       // ── Jeda isolasi galvanik ─────────────────────────────────
-      // Setelah DMS OFF, elektroda pH masih meninggalkan sisa potensial
-      // di larutan. Jeda ini memastikan medium kembali netral sebelum
-      // probe soil mengukur hambatan.
-      Serial.printf("[Isolasi] Jeda galvanik %lums sebelum baca soil...\n", GALVANIC_ISOLASI_MS);
+      // Probe soil meninggalkan muatan kapasitif di medium setelah
+      // pengukuran selesai. Jeda ini memberi waktu muatan tersebut
+      // terurai sebelum elektroda pH mulai sampling, sehingga
+      // potensial yang dibaca pH tidak tergeser oleh arus sisa soil.
+      Serial.printf("[Isolasi] Jeda galvanik %lums sebelum baca pH...\n", GALVANIC_ISOLASI_MS);
       for (unsigned long elapsed = 0; elapsed < GALVANIC_ISOLASI_MS; elapsed += 100) {
         tickPompa();
         vTaskDelay(pdMS_TO_TICKS(100));
       }
 
-      // 3. Soil — diukur setelah pH dan jeda selesai
-      float soilVal = bacaSoil();
+      // 3. pH — ambil suhu lokal dulu, lalu baca (boleh blocking)
+      float suhuLokal = (!isnan(t)) ? t : 0.0f;
+      float phBaru    = bacaPH(suhuLokal);
 
-      // ── Cross-contamination guard ─────────────────────────────
+      // ── Cross-contamination guard (diperkuat) ─────────────────
+      // Tolak pembacaan pH jika:
+      //   a) soil sangat basah (>80%) DAN pH lompat >1.0 → interferensi galvanik masih ada
+      //   b) pH lompat >1.5 tanpa syarat soil → spike ADC
       float phSekarang;
       if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
         phSekarang = sd.pH;

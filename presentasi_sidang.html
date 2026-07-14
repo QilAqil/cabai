@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Sidang TA – Pertanian Cerdas Cabai Rawit</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f1117;--slide:#1a1d27;--card:#222637;--border:#2e3350;
+  --accent:#4f8ef7;--green:#22c55e;--yellow:#f59e0b;--red:#ef4444;
+  --text:#e2e8f0;--muted:#94a3b8;--r:14px;
+  --accent2:#a78bfa;--accent3:#34d399;
+}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;
+  height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+/* TOOLBAR */
+#toolbar{background:var(--slide);border-bottom:1px solid var(--border);
+  padding:10px 24px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+#toolbar .t-left{display:flex;align-items:center;gap:12px;}
+#toolbar .title{font-size:.85rem;font-weight:700;color:var(--accent);}
+#toolbar .nav{display:flex;gap:8px;}
+.nav-btn{padding:7px 16px;border-radius:8px;border:1px solid var(--border);
+  background:var(--card);color:var(--text);cursor:pointer;font-size:.82rem;
+  font-weight:600;transition:all .2s;}
+.nav-btn:hover{border-color:var(--accent);color:var(--accent);}
+.nav-btn:disabled{opacity:.3;cursor:not-allowed;}
+#slide-counter{font-size:.82rem;color:var(--muted);background:var(--card);
+  padding:6px 14px;border-radius:8px;border:1px solid var(--border);}
+/* SLIDE AREA */
+#stage{flex:1;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;padding:20px;position:relative;}
+.slide{width:100%;max-width:1100px;min-height:580px;background:var(--slide);
+  border:1px solid var(--border);border-radius:var(--r);padding:52px 60px;
+  display:none;flex-direction:column;animation:fadeIn .35s ease;
+  position:relative;overflow:hidden;}
+.slide.active{display:flex;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+/* slide number badge */
+.slide::after{content:attr(data-num);position:absolute;bottom:20px;right:28px;
+  font-size:.72rem;color:var(--border);font-weight:700;}
+/* decorative top bar */
+.slide::before{content:"";position:absolute;top:0;left:0;right:0;height:4px;
+  background:linear-gradient(90deg,var(--accent),var(--accent2),var(--accent3));}
+/* TYPOGRAPHY */
+.chip{display:inline-block;padding:4px 14px;border-radius:999px;font-size:.72rem;
+  font-weight:700;letter-spacing:.5px;margin-bottom:14px;}
+.chip.blue{background:rgba(79,142,247,.15);color:var(--accent);border:1px solid rgba(79,142,247,.3);}
+.chip.green{background:rgba(34,197,94,.12);color:var(--green);border:1px solid rgba(34,197,94,.3);}
+.chip.purple{background:rgba(167,139,250,.12);color:var(--accent2);border:1px solid rgba(167,139,250,.3);}
+.chip.yellow{background:rgba(245,158,11,.12);color:var(--yellow);border:1px solid rgba(245,158,11,.3);}
+h1{font-size:2rem;font-weight:800;line-height:1.2;margin-bottom:8px;}
+h2{font-size:1.4rem;font-weight:700;margin-bottom:20px;color:var(--accent);}
+h3{font-size:1rem;font-weight:700;margin-bottom:10px;color:var(--accent2);}
+p{font-size:.9rem;color:var(--muted);line-height:1.7;}
+.sub{font-size:.85rem;color:var(--muted);}
+/* GRID HELPERS */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px;}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:16px;}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:16px;}
+/* CARDS */
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:18px 20px;}
+.card h3{margin-bottom:6px;}
+.card p{font-size:.82rem;}
+/* ICON BOX */
+.ibox{font-size:2rem;margin-bottom:10px;}
+/* LIST */
+ul.fancy{list-style:none;display:flex;flex-direction:column;gap:10px;margin-top:10px;}
+ul.fancy li{display:flex;align-items:flex-start;gap:10px;font-size:.88rem;line-height:1.5;}
+ul.fancy li::before{content:"✦";color:var(--accent);flex-shrink:0;margin-top:2px;}
+/* TABLE */
+table.sl{width:100%;border-collapse:collapse;font-size:.8rem;margin-top:12px;}
+table.sl thead tr{background:var(--card);}
+table.sl th{padding:10px 14px;text-align:left;color:var(--muted);font-weight:600;
+  border-bottom:1px solid var(--border);}
+table.sl td{padding:9px 14px;border-bottom:1px solid rgba(46,51,80,.4);}
+table.sl tr:hover td{background:rgba(255,255,255,.02);}
+/* STAT BOX */
+.stat{text-align:center;background:var(--card);border:1px solid var(--border);
+  border-radius:10px;padding:20px 14px;}
+.stat .num{font-size:2rem;font-weight:800;color:var(--accent);}
+.stat .lbl{font-size:.75rem;color:var(--muted);margin-top:4px;}
+/* BADGE */
+.badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.72rem;font-weight:700;}
+.badge.g{background:rgba(34,197,94,.15);color:var(--green);}
+.badge.b{background:rgba(79,142,247,.15);color:var(--accent);}
+.badge.y{background:rgba(245,158,11,.15);color:var(--yellow);}
+/* FLOW */
+.flow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px;}
+.fbox{background:var(--card);border:1px solid var(--border);border-radius:8px;
+  padding:10px 16px;font-size:.8rem;font-weight:600;text-align:center;flex:1;min-width:80px;}
+.farrow{color:var(--accent);font-size:1.2rem;flex-shrink:0;}
+/* COVER SPECIAL */
+.cover-wrap{display:flex;flex-direction:column;align-items:center;text-align:center;
+  justify-content:center;flex:1;gap:12px;}
+.cover-wrap h1{font-size:1.8rem;line-height:1.3;color:var(--text);}
+.univ-badge{background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:14px 28px;font-size:.82rem;margin-top:4px;}
+/* HIGHLIGHT */
+.hl{color:var(--accent);font-weight:700;}
+.hl2{color:var(--green);font-weight:700;}
+.hl3{color:var(--yellow);font-weight:700;}
+/* PROGRESS BAR */
+.prog-wrap{background:var(--card);border-radius:6px;height:10px;overflow:hidden;margin:6px 0 2px;}
+.prog{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--accent2));}
+/* THUMBNAIL DOTS */
+#dots{display:flex;gap:6px;justify-content:center;padding:12px;flex-shrink:0;}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--border);
+  cursor:pointer;transition:all .2s;}
+.dot.active{background:var(--accent);transform:scale(1.3);}
+</style>
+</head>
+<body>
+
+<!-- TOOLBAR -->
+<div id="toolbar">
+  <div class="t-left">
+    <span class="title">🌶 Sidang Tugas Akhir – Pertanian Cerdas Cabai Rawit</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <div class="nav">
+      <button class="nav-btn" id="btn-prev" onclick="prevSlide()">◀ Prev</button>
+      <button class="nav-btn" id="btn-next" onclick="nextSlide()">Next ▶</button>
+    </div>
+    <span id="slide-counter">1 / 12</span>
+  </div>
+</div>
+
+<!-- STAGE -->
+<div id="stage">
+
+<!-- ═══════════════════════ SLIDE 1 – COVER ═══════════════════════ -->
+<div class="slide active" data-num="1/12">
+  <div class="cover-wrap">
+    <span class="chip blue">TUGAS AKHIR – PROGRAM STUDI TEKNIK INFORMATIKA</span>
+    <div style="font-size:2.8rem;margin-bottom:4px;">🌶</div>
+    <h1>SISTEM PERTANIAN CERDAS<br>TANAMAN CABE RAWIT<br>
+      <span style="color:var(--accent)">MENGGUNAKAN METODE FUZZY TAHANI</span><br>
+      BERBASIS IoT
+    </h1>
+    <div class="univ-badge">
+      <div style="font-weight:700;font-size:.95rem;margin-bottom:4px;">MUKHAMAD SA'ID AQIL &nbsp;|&nbsp; NIM. 2021150081</div>
+      <div style="color:var(--muted);font-size:.78rem;">
+        Program Studi Teknik Informatika · Fakultas Teknik dan Ilmu Komputer<br>
+        Universitas Sains Al-Qur'an Jawa Tengah di Wonosobo · 2026
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;justify-content:center;">
+      <span class="badge b">Pembimbing Utama: Muslim Hidayat, S.Kom., M.Kom.</span>
+      <span class="badge b">Pembimbing Pendamping: Iman Ahmad Ihsannuddin, S.Pd.Kom, M.Pd.</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ SLIDE 2 – LATAR BELAKANG ═══════════════════════ -->
+<div class="slide" data-num="2/12">
+  <span class="chip blue">BAB I – PENDAHULUAN</span>
+  <h2>Latar Belakang Masalah</h2>
+  <div class="g2" style="flex:1;">
+    <div>
+      <h3>🌶 Urgensi Komoditas</h3>
+      <ul class="fancy" style="margin-top:8px;">
+        <li>Cabai rawit (<em>Capsicum frutescens L.</em>) bernilai ekonomi tinggi dan strategis bagi petani</li>
+        <li>Kabupaten Magelang: lahan <span class="hl">3.828,9 ha</span> dengan produksi <span class="hl">511.556,9 kwintal</span> (BPS, 2023)</li>
+        <li>Permintaan tinggi dari rumah tangga &amp; industri kuliner</li>
+        <li>Tanaman memerlukan: kelembapan <span class="hl">50–70%</span>, pH <span class="hl">6–7</span>, suhu <span class="hl">24–28°C</span></li>
+      </ul>
+    </div>
+    <div>
+      <h3>⚠ Permasalahan Lapangan</h3>
+      <ul class="fancy" style="margin-top:8px;">
+        <li>Pemantauan masih <span class="hl3">manual</span> — petani harus datang ke greenhouse</li>
+        <li>pH tanah, suhu, dan kelembapan sering tidak stabil</li>
+        <li>Iklim lembap → risiko serangan jamur &amp; OPT meningkat</li>
+        <li>Kerontokan bunga → penurunan produktivitas</li>
+        <li>Sistem monitoring yang ada <span class="hl3">tidak memiliki pengambilan keputusan otomatis</span></li>
+      </ul>
+    </div>
+  </div>
+  <div style="margin-top:18px;padding:14px 18px;background:rgba(79,142,247,.08);
+    border:1px solid rgba(79,142,247,.25);border-radius:10px;font-size:.87rem;">
+    💡 <strong>Solusi:</strong> Sistem Pertanian Cerdas berbasis <span class="hl">IoT + Fuzzy Tahani</span> untuk pemantauan real-time dan pengendalian otomatis kondisi lingkungan greenhouse cabai rawit.
+  </div>
+</div>
+
+<!-- ═══════════════════════ SLIDE 3 – RUMUSAN & TUJUAN ═══════════════════════ -->
+<div class="slide" data-num="3/12">
+  <span class="chip purple">BAB I – PENDAHULUAN</span>
+  <h2>Rumusan Masalah, Batasan &amp; Tujuan</h2>
+  <div class="g3" style="flex:1;">
+    <div class="card">
+      <div class="ibox">❓</div>
+      <h3>Rumusan Masalah</h3>
+      <ul class="fancy" style="margin-top:6px;">
+        <li>Bagaimana merancang sistem IoT yang mampu memantau dan mengendalikan kondisi cabai rawit secara <span class="hl">real-time</span>?</li>
+        <li>Bagaimana menerapkan <span class="hl">Fuzzy Tahani + MQTT</span> untuk menghasilkan keputusan pengendalian otomatis?</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="ibox">🔒</div>
+      <h3>Batasan Masalah</h3>
+      <ul class="fancy" style="margin-top:6px;">
+        <li>Objek: cabai rawit di Kabupaten Magelang, skala greenhouse</li>
+        <li>Tiga sensor: <span class="hl">DHT22, Soil Moisture, pH Tanah</span></li>
+        <li>Data dikirim via protokol MQTT</li>
+        <li>Ditampilkan pada dashboard web real-time</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="ibox">🎯</div>
+      <h3>Tujuan Penelitian</h3>
+      <ul class="fancy" style="margin-top:6px;">
+        <li>Membangun sistem IoT (ESP32) untuk monitoring pH, suhu, kelembapan secara real-time</li>
+        <li>Menerapkan Fuzzy Tahani + MQTT untuk keputusan otomatis yang cepat &amp; stabil</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ SLIDE 4 – LANDASAN TEORI ═══════════════════════ -->
+<div class="slide" data-num="4/12">
+  <span class="chip green">BAB II – LANDASAN TEORI</span>
+  <h2>Landasan Teori</h2>
+  <div class="g4" style="flex:1;">
+    <div class="card">
+      <div class="ibox">🌐</div>
+      <h3>IoT</h3>
+      <p>Jaringan objek fisik terhubung internet untuk akuisisi data, monitoring &amp; pengendalian otomatis tanpa intervensi manusia langsung.</p>
+    </div>
+    <div class="card">
+      <div class="ibox">🔧</div>
+      <h3>ESP32</h3>
+      <p>Mikrokontroler dengan WiFi + Bluetooth terintegrasi. Prosesor dual-core 240 MHz, 520 KB SRAM. Pusat pengolahan data IoT.</p>
+    </div>
+    <div class="card">
+      <div class="ibox">📡</div>
+      <h3>Protokol MQTT</h3>
+      <p>Protokol ringan publish-subscribe untuk IoT. Latensi rendah, efisien bandwidth, cocok untuk sensor &amp; perangkat berdaya rendah.</p>
+    </div>
+    <div class="card">
+      <div class="ibox">🧠</div>
+      <h3>Fuzzy Tahani</h3>
+      <p>Metode pengambilan keputusan fuzzy berbasis database relasional. Menggunakan query fuzzy + <em>fire strength</em> untuk keputusan adaptif.</p>
+    </div>
+  </div>
+  <div class="g3" style="margin-top:14px;">
+    <div class="card">
+      <div style="font-size:1.4rem">🌡</div>
+      <h3>DHT22</h3>
+      <p>Mengukur suhu udara (−40°C~80°C) &amp; kelembapan udara (0–100% RH)</p>
+    </div>
+    <div class="card">
+      <div style="font-size:1.4rem">🪱</div>
+      <h3>Sensor Soil Moisture</h3>
+      <p>Mengukur kadar air tanah via resistansi / kapasitansi. Dasar keputusan penyiraman otomatis.</p>
+    </div>
+    <div class="card">
+      <div style="font-size:1.4rem">⚗</div>
+      <h3>Sensor pH Tanah</h3>
+      <p>Mengukur keasaman tanah. Cabai rawit memerlukan pH optimal <span class="hl">6 – 7</span> untuk penyerapan hara efektif.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ SLIDE 5 – METODOLOGI ═══════════════════════ -->
+<div class="slide" data-num="5/12">
+  <span class="chip yellow">BAB III – METODOLOGI</span>
+  <h2>Metodologi Penelitian</h2>
+  <div style="display:flex;gap:20px;flex:1;margin-top:4px;">
+    <div style="flex:1;">
+      <h3>Metode Pengembangan: Prototyping (5 Tahap)</h3>
+      <div class="flow" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:12px;">
+        <div class="fbox" style="background:rgba(79,142,247,.1);border-color:rgba(79,142,247,.4);">1️⃣ Komunikasi – Wawancara 3 petani Magelang + observasi</div>
+        <div style="text-align:center;color:var(--accent)">▼</div>
+        <div class="fbox" style="background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.4);">2️⃣ Pengumpulan Kebutuhan – Analisis HW &amp; SW</div>
+        <div style="text-align:center;color:var(--accent)">▼</div>
+        <div class="fbox" style="background:rgba(52,211,153,.1);border-color:rgba(52,211,153,.4);">3️⃣ Membangun Sistem – Diagram blok + skema rangkaian</div>
+        <div style="text-align:center;color:var(--accent)">▼</div>
+        <div class="fbox" style="background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.4);">4️⃣ Pengkodean – C++ (ESP32), HTML/CSS/JS (Dashboard)</div>
+        <div style="text-align:center;color:var(--accent)">▼</div>
+        <div class="fbox" style="background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.4);">5️⃣ Pengujian – Black Box Testing + UAT</div>
+      </div>
+    </div>
+    <div style="flex:1;display:flex;flex-direction:column;gap:14px;">
+      <h3>Implementasi Fuzzy Tahani</h3>
+      <div class="flow" style="flex-wrap:nowrap;gap:6px;margin-top:0;">
+        <div class="fbox" style="font-size:.72rem;">📥<br>Input<br><span style="color:var(--muted)">pH, Suhu,<br>Kelembapan</span></div>
+        <span class="farrow">→</span>
+        <div class="fbox" style="font-size:.72rem;">🔀<br>Fuzzifikasi<br><span style="color:var(--muted)">Trapesium<br>Segitiga</span></div>
+        <span class="farrow">→</span>
+        <div class="fbox" style="font-size:.72rem;">⚡<br>Fire<br>Strength<br><span style="color:var(--muted)">min(AND)</span></div>
+        <span class="farrow">→</span>
+        <div class="fbox" style="font-size:.72rem;">📤<br>Keputusan<br><span style="color:var(--muted)">Relay<br>ON/OFF</span></div>
+      </div>
+      <div class="card" style="margin-top:6px;">
+        <h3>Variabel Input &amp; Himpunan Fuzzy</h3>
+        <table class="sl" style="margin-top:8px;">
+          <thead><tr><th>Variabel</th><th>Himpunan</th><th>Range</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="3" style="color:var(--accent);font-weight:700;">Suhu</td><td>Rendah</td><td>≤ 24°C</td></tr>
+            <tr><td>Sedang</td><td>24–31°C</td></tr>
+            <tr><td>Tinggi</td><td>≥ 27°C</td></tr>
+            <tr><td rowspan="3" style="color:var(--green);font-weight:700;">Kelembapan</td><td>Kering</td><td>≤ 40%</td></tr>
+            <tr><td>Lembab</td><td>40–80%</td></tr>
+            <tr><td>Basah</td><td>≥ 70%</td></tr>
+            <tr><td rowspan="3" style="color:var(--yellow);font-weight:700;">pH</td><td>Asam</td><td>3–6</td></tr>
+            <tr><td>Normal</td><td>5.5–7.5</td></tr>
+            <tr><td>Basa</td><td>7–9</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ SLIDE 6 – DESAIN SISTEM ═══════════════════════ -->
+<div class="slide" data-num="6/12">
+  <span class="chip blue">BAB IV – HASIL &amp; PEMBAHASAN</span>
+  <h2>Desain Sistem – Arsitektur &amp; Hardware</h2>
+  <div class="g2" style="flex:1;">
+    <div>
+      <h3>Diagram Blok Sistem</h3>
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px;margin-top:10px;font-size:.8rem;">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;">
+          <div style="background:rgba(79,142,247,.1);border:1px solid rgba(79,142,247,.3);border-radius:8px;padding:10px;">🌡 DHT22<br><span style="color:var(--muted)">Suhu + RH</span></div>
+          <div style="background:rgba(79,142,247,.1);border:1px solid rgba(79,142,247,.3);border-radius:8px;padding:10px;">🪱 Soil Moisture<br><span style="color:var(--muted)">Kelembapan</span></div>
+          <div style="background:rgba(79,142,247,.1);border:1px solid rgba(79,142,247,.3);border-radius:8px;padding:10px;">⚗ pH Sensor<br><span style="color:var(--muted)">pH Tanah</span></div>
+        </div>
+        <div style="text-align:center;margin:8px 0;color:var(--accent)">▼ ▼ ▼</div>
+        <div style="background:rgba(167,139,250,.15);border:1px solid rgba(167,139,250,.4);border-radius:10px;padding:14px;text-align:center;font-weight:700;font-size:.9rem;">
+          ⚙ ESP32 (FreeRTOS Dual-Core)<br>
+          <span style="font-size:.75rem;color:var(--muted);font-weight:400;">Core 0: MQTT + Supabase | Core 1: Sensor + Fuzzy + Relay</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px;text-align:center;">
+          <div style="background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:10px;">🌀 Relay Kipas<br><span style="color:var(--muted)">Suhu Tinggi</span></div>
+          <div style="background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:10px;">💦 Pompa Air<br><span style="color:var(--muted)">Tanah Kering</span></div>
+          <div style="background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:10px;">🧪 Pompa pH<br><span style="color:var(--muted)">pH Asam</span></div>
+        </div>
+        <div style="text-align:center;margin:8px 0;color:var(--accent)">▼</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;text-align:center;">
+          <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:10px;">📡 MQTT Broker (EMQX)<br><span style="color:var(--muted)">TLS 8883 / WSS 8084</span></div>
+          <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:10px;">🗄 Supabase DB<br><span style="color:var(--muted)">REST API / HTTPS</span></div>
+        </div>
+        <div style="text-align:center;margin:6px 0;color:var(--accent)">▼</div>
+        <div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:10px;text-align:center;">🖥 Dashboard Web (Real-time) + Kontrol Manual</div>
+      </div>
+    </div>
+    <div>
+      <h3>Kebutuhan Hardware &amp; Software</h3>
+      <table class="sl" style="margin-top:8px;">
+        <thead><tr><th>Komponen</th><th>Fungsi</th></tr></thead>
+        <tbody>
+          <tr><td><span class="badge b">HW</span> ESP32</td><td>Mikrokontroler utama</td></tr>
+          <tr><td><span class="badge b">HW</span> DHT22</td><td>Suhu &amp; kelembapan udara</td></tr>
+          <tr><td><span class="badge b">HW</span> Soil Moisture</td><td>Kelembapan tanah</td></tr>
+          <tr><td><span class="badge b">HW</span> Sensor pH</td><td>pH tanah + modul DMS</td></tr>
+          <tr><td><span class="badge b">HW</span> Relay 1+2ch</td><td>Saklar aktuator</td></tr>
+          <tr><td><span class="badge b">HW</span> 2 Pompa Mini</td><td>Irigasi &amp; koreksi pH</td></tr>
+          <tr><td><span class="badge g">SW</span> Arduino IDE</td><td>Pemrograman ESP32</td></tr>
+          <tr><td><span class="badge g">SW</span> EMQX Cloud</td><td>MQTT Broker</td></tr>
+          <tr><td><span class="badge g">SW</span> Supabase</td><td>Database cloud</td></tr>
+          <tr><td><span class="badge g">SW</span> VS Code + HTML</td><td>Dashboard web</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ SLIDE 7 – IMPLEMENTASI FUZZY ═══════════════════════ -->
+<div class="slide" data-num="7/12">
+  <span class="chip purple">BAB IV – HASIL &amp; PEMBAHASAN</span>
+  <h2>Implementasi Fuzzy Tahani &amp; Arsitektur Kode</h2>
+  <div class="g2" style="flex:1;">
+    <div>
+      <h3>Rule Base Fuzzy Tahani</h3>
+      <table class="sl" style="margin-top:10px;">
+        <thead><tr><th>Rule</th><th>Kondisi</th><th>Fire Strength</th><th>Aktuator</th></tr></thead>
+        <tbody>
+          <tr><td><span class="badge b">R1</span></td><td>IF Suhu <span class="hl">Tinggi</span></td><td>μ<sub>tinggi</sub>(T)</td><td>🌀 <span class="hl2">Kipas ON</span></td></tr>
+          <tr><td><span class="badge g">R2</span></td><td>IF Tanah <span class="hl">Kering</span></td><td>μ<sub>kering</sub>(S)</td><td>💦 <span class="hl2">Pompa Air ON</span></td></tr>
+          <tr><td><span class="badge y">R3</span></td><td>IF pH <span class="hl">Asam</span></td><td>μ<sub>asam</sub>(P)</td><td>🧪 <span class="hl2">Pompa pH ON</span></td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:14px;padding:12px 16px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.25);border-radius:10px;font-size:.82rem;">
+        <strong>Threshold keputusan:</strong><br>
+        • Kipas ON jika μ<sub>tinggi</sub> <strong>&gt; 0.5</strong><br>
+        • Pompa Air ON jika μ<sub>kering</sub> <strong>&gt; 0.4</strong> dan soil &gt; 0<br>
+        • Pompa pH ON jika μ<sub>asam</sub> <strong>&gt; 0.4</strong> dan pH &gt; 0
+      </div>
+      <div style="margin-top:12px;padding:12px 16px;background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.2);border-radius:10px;font-size:.82rem;">
+        <strong>Logika Pompa (Timer):</strong><br>
+        • Pompa Air: nyala <span class="hl2">10 detik</span> → jeda <span class="hl2">30 menit</span><br>
+        • Pompa pH: nyala <span class="hl2">10 detik</span> → jeda <span class="hl2">3 jam</span><br>
+        • Manual mode → bypass semua jeda
+      </div>
+    </div>
+    <div>
+      <h3>Arsitektur FreeRTOS Dual-Core</h3>
+      <div style="margin-top:10px;display:flex;flex-direction:column;gap:10px;">
+        <div style="background:rgba(79,142,247,.1);border:1px solid rgba(79,142,247,.35);border-radius:10px;padding:14px;">
+          <div style="font-weight:700;margin-bottom:6px;color:var(--accent)">Core 0 — TaskKomunikasi (Prioritas 1)</div>
+          <ul class="fancy" style="margin-top:0;">
+            <li>WiFi connect + NTP sync</li>
+            <li>MQTT TLS keep-alive + callback perintah manual</li>
+            <li>Publish data sensor ke broker tiap 15 detik</li>
+            <li>Insert Supabase REST API tiap 60 detik</li>
+          </ul>
+        </div>
+        <div style="background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.3);border-radius:10px;padding:14px;">
+          <div style="font-weight:700;margin-bottom:6px;color:var(--accent3)">Core 1 — TaskSensor (Prioritas 2)</div>
+          <ul class="fancy" style="margin-top:0;">
+            <li>Baca DHT22, Soil Moisture (Kalman Filter), Sensor pH (Kalman + drift-guard)</li>
+            <li>Inferensi Fuzzy Tahani → keputusan aktuator</li>
+            <li>tickPompa() tiap 20 ms — timer pompa auto &amp; manual</li>
+            <li>Fast-path relay manual &lt; 20 ms tanpa menunggu siklus sensor</li>
+          </ul>
+        </div>
+        <div style="background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.25);border-radius:10px;padding:12px;font-size:.8rem;">
+          <strong>Sinkronisasi:</strong> xSemaphoreMutex melindungi SharedData antar core · volatile ManualCmd untuk perintah instan
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ SLIDE 8 – TAMPILAN SISTEM ═══════════════════════ -->
+<div class="slide" data-num="8/12">
+  <span class="chip blue">BAB IV – HASIL &amp; PEMBAHASAN</span>
+  <h2>Tampilan Sistem – Dashboard &amp; Prototype</h2>
+  <div class="g2" style="flex:1;align-items:start;">
+    <div>
+      <h3>Dashboard Web Real-Time</h3>
+      <!-- Mockup dashboard -->
+      <div style="background:#0f1117;border:1px solid #2e3350;border-radius:10px;padding:14px;margin-top:10px;font-size:.76rem;">
+        <div style="background:#1a1d27;padding:8px 12px;border-radius:8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;">
+          <span style="color:#4f8ef7;font-weight:700;">🌶 Pertanian Cerdas Cabai Rawit</span>
+          <span style="background:#166534;color:#4ade80;padding:2px 8px;border-radius:999px;font-size:.7rem;">● TERHUBUNG</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px;">
+          <div style="background:#1a1d27;border:1px solid #2e3350;border-radius:8px;padding:10px;text-align:center;">
+            <div style="color:#94a3b8;font-size:.65rem;">SUHU</div>
+            <div style="font-size:1.3rem;font-weight:800;color:#e2e8f0;">24.0</div>
+            <div style="font-size:.65rem;color:#94a3b8;">°C</div>
+            <div style="background:#fef3c7;color:#92400e;border-radius:999px;padding:1px 6px;font-size:.65rem;font-weight:700;margin-top:3px;display:inline-block;">Rendah</div>
+          </div>
+          <div style="background:#1a1d27;border:1px solid #2e3350;border-radius:8px;padding:10px;text-align:center;">
+            <div style="color:#94a3b8;font-size:.65rem;">KELEMBAPAN</div>
+            <div style="font-size:1.3rem;font-weight:800;color:#e2e8f0;">81.3</div>
+            <div style="font-size:.65rem;color:#94a3b8;">%</div>
+          </div>
+          <div style="background:#1a1d27;border:1px solid #2e3350;border-radius:8px;padding:10px;text-align:center;">
+            <div style="color:#94a3b8;font-size:.65rem;">TANAH</div>
+            <div style="font-size:1.3rem;font-weight:800;color:#e2e8f0;">27.0</div>
+            <div style="font-size:.65rem;color:#94a3b8;">%</div>
+            <div style="background:#d1fae5;color:#065f46;border-radius:999px;padding:1px 6px;font-size:.65rem;font-weight:700;margin-top:3px;display:inline-block;">Lembab</div>
+          </div>
+          <div style="background:#1a1d27;border:1px solid #2e3350;border-radius:8px;padding:10px;text-align:center;">
+            <div style="color:#94a3b8;font-size:.65rem;">pH TANAH</div>
+            <div style="font-size:1.3rem;font-weight:800;color:#e2e8f0;">0.00</div>
+            <div style="font-size:.65rem;color:#94a3b8;">pH</div>
+            <div style="background:#d1fae5;color:#065f46;border-radius:999px;padding:1px 6px;font-size:.65rem;font-weight:700;margin-top:3px;display:inline-block;">Normal</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px;">
+          <div style="background:#1a1d27;border:1px solid #2e3350;border-radius:8px;padding:8px;text-align:center;">
+            <div>🌀 Kipas</div>
+            <div style="background:rgba(148,163,184,.1);color:#94a3b8;border:1px solid #2e3350;border-radius:6px;padding:4px;margin-top:4px;font-weight:700;font-size:.75rem;">OFF</div>
+          </div>
+          <div style="background:#1a1d27;border:1px solid #2e3350;border-radius:8px;padding:8px;text-align:center;">
+            <div>💦 Pompa Air</div>
+            <div style="background:rgba(34,197,94,.15);color:#22c55e;border:1px solid #22c55e;border-radius:6px;padding:4px;margin-top:4px;font-weight:700;font-size:.75rem;">ON</div>
+          </div>
+          <div style="background:#1a1d27;border:1px solid #2e3350;border-radius:8px;padding:8px;text-align:center;">
+            <div>🧪 Pompa pH</div>
+            <div style="background:rgba(148,163,184,.1);color:#94a3b8;border:1px solid #2e3350;border-radius:6px;padding:4px;margin-top:4px;font-weight:700;font-size:.75rem;">OFF</div>
+          </div>
+        </div>
+        <div style="background:#1a1d27;border:1px solid #2e3350;border-radius:6px;padding:6px 10px;font-size:.68rem;color:#94a3b8;">
+          📋 Riwayat data tersimpan di Supabase — 60 baris terakhir ditampilkan &amp; auto-refresh 60 detik
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <h3>Fitur Utama Dashboard</h3>
+      <ul class="fancy">
+        <li>Tampilan <span class="hl">real-time</span> suhu, kelembapan udara, kelembapan tanah, pH — update tiap 15 detik via MQTT</li>
+        <li>Badge status himpunan fuzzy: Rendah/Sedang/Tinggi · Kering/Lembab/Basah · Asam/Normal/Basa</li>
+        <li>Indikator relay ON/OFF + countdown jeda pompa</li>
+        <li><span class="hl">Kontrol manual</span> aktuator via dashboard — kirim perintah ke ESP32 via MQTT topic <code>pertanian/kontrol</code></li>
+        <li>Riwayat 120 data terakhir dari Supabase dengan auto-refresh</li>
+        <li>Status WiFi ESP32 (SSID, IP, RSSI) tampil di header</li>
+      </ul>
+      <div style="padding:12px 16px;background:rgba(79,142,247,.08);border:1px solid rgba(79,142,247,.25);border-radius:10px;font-size:.82rem;">
+        <strong>Stack Teknologi Web:</strong><br>
+        HTML + CSS (dark theme) · MQTT.js WebSocket · Supabase REST API · Deployed via GitHub Pages
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ SLIDE 9 – PENGUJIAN SENSOR ═══════════════════════ -->
+<div class="slide" data-num="9/12">
+  <span class="chip green">BAB IV – HASIL PENGUJIAN</span>
+  <h2>Pengujian Sensor &amp; Akurasi</h2>
+  <div class="g3" style="flex:1;align-items:start;">
+    <div>
+      <h3>🌡 Sensor Suhu DHT22</h3>
+      <table class="sl" style="margin-top:8px;">
+        <thead><tr><th>No</th><th>Serial Monitor</th><th>Website</th><th>Hasil</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>23.4°C</td><td>23.4°C</td><td><span class="badge g">Sesuai</span></td></tr>
+          <tr><td>2</td><td>23.8°C</td><td>23.8°C</td><td><span class="badge g">Sesuai</span></td></tr>
+          <tr><td>3</td><td>23.8°C</td><td>23.8°C</td><td><span class="badge g">Sesuai</span></td></tr>
+          <tr><td>4</td><td>23.6°C</td><td>23.6°C</td><td><span class="badge g">Sesuai</span></td></tr>
+          <tr><td>5</td><td>23.4°C</td><td>23.4°C</td><td><span class="badge g">Sesuai</span></td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:10px;padding:8px 12px;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.2);border-radius:8px;font-size:.8rem;">
+        ✅ <strong>100% akurat</strong> — nilai Serial Monitor = nilai website
+      </div>
+    </div>
+    <div>
+      <h3>🪱 Sensor Kelembapan Tanah</h3>
+      <table class="sl" style="margin-top:8px;">
+        <thead><tr><th>No</th><th>Serial Monitor</th><th>Website</th><th>Hasil</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>81.6%</td><td>81.6%</td><td><span class="badge g">Sesuai</span></td></tr>
+          <tr><td>2</td><td>81.1%</td><td>81.1%</td><td><span class="badge g">Sesuai</span></td></tr>
+          <tr><td>3</td><td>81.2%</td><td>81.2%</td><td><span class="badge g">Sesuai</span></td></tr>
+          <tr><td>4</td><td>80.3%</td><td>80.3%</td><td><span class="badge g">Sesuai</span></td></tr>
+          <tr><td>5</td><td>80.2%</td><td>80.2%</td><td><span class="badge g">Sesuai</span></td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:10px;padding:8px 12px;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.2);border-radius:8px;font-size:.8rem;">
+        ✅ <strong>100% akurat</strong> — nilai Serial Monitor = nilai website
+      </div>
+    </div>
+    <div>
+      <h3>⚗ Sensor pH Tanah</h3>
+      <table class="sl" style="margin-top:8px;">
+        <thead><tr><th>Kondisi</th><th>pH Ref</th><th>Akurasi</th></tr></thead>
+        <tbody>
+          <tr><td>Tanah Asam</td><td>4.90</td><td>90.00 – 99.59%</td></tr>
+          <tr><td>Tanah Normal</td><td>6.80</td><td>87.50 – 96.03%</td></tr>
+          <tr><td>Tanah Basa</td><td>8.10</td><td>93.09 – 97.04%</td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:10px;padding:12px 14px;background:rgba(79,142,247,.1);border:1px solid rgba(79,142,247,.3);border-radius:8px;">
+        <div style="font-size:1.5rem;font-weight:800;color:var(--accent);text-align:center;">94.12%</div>
+        <div style="font-size:.78rem;color:var(--muted);text-align:center;margin-top:2px;">Rata-Rata Akurasi Sensor pH</div>
+        <div class="prog-wrap" style="margin-top:8px;"><div class="prog" style="width:94.12%"></div></div>
+      </div>
+      <div style="margin-top:8px;font-size:.78rem;color:var(--muted);padding:8px 12px;background:var(--card);border-radius:8px;border:1px solid var(--border);">
+        Kalibrasi 3 titik: buffer pH 4.01, 6.86, 9.18. Metode interpolasi piecewise linear.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ SLIDE 10 – PENGUJIAN FUZZY ═══════════════════════ -->
+<div class="slide" data-num="10/12">
+  <span class="chip yellow">BAB IV – HASIL PENGUJIAN</span>
+  <h2>Pengujian Fuzzy Tahani &amp; Perbandingan</h2>
+  <div class="g2" style="flex:1;align-items:start;">
+    <div>
+      <h3>Perbandingan Manual vs Sistem (5 Data)</h3>
+      <table class="sl" style="margin-top:10px;">
+        <thead>
+          <tr>
+            <th>No</th><th>pH</th><th>Suhu</th><th>Tanah</th>
+            <th colspan="3" style="color:var(--accent);">Manual</th>
+            <th colspan="3" style="color:var(--green);">Sistem</th>
+            <th>Sesuai</th>
+          </tr>
+          <tr>
+            <th></th><th></th><th></th><th></th>
+            <th>pH</th><th>Suhu</th><th>Tanah</th>
+            <th>pH</th><th>Suhu</th><th>Tanah</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td>6.90</td><td>22.0</td><td>70</td><td>1.00</td><td>1.00</td><td>1.00</td><td>1.00</td><td>1.00</td><td>1.00</td><td><span class="badge g">Ya</span></td></tr>
+          <tr><td>2</td><td>6.90</td><td>22.0</td><td>71</td><td>1.00</td><td>1.00</td><td>0.90</td><td>1.00</td><td>1.00</td><td>0.90</td><td><span class="badge g">Ya</span></td></tr>
+          <tr><td>3</td><td>6.43</td><td>23.1</td><td>58</td><td>1.00</td><td>1.00</td><td>1.00</td><td>1.00</td><td>1.00</td><td>1.00</td><td><span class="badge g">Ya</span></td></tr>
+          <tr><td>4</td><td>6.31</td><td>23.1</td><td>58</td><td>1.00</td><td>1.00</td><td>1.00</td><td>1.00</td><td>1.00</td><td>1.00</td><td><span class="badge g">Ya</span></td></tr>
+          <tr><td>5</td><td>5.95</td><td>24.4</td><td>49</td><td>0.90</td><td>0.87</td><td>0.90</td><td>0.90</td><td>0.87</td><td>0.90</td><td><span class="badge g">Ya</span></td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:12px;padding:12px 16px;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);border-radius:10px;text-align:center;">
+        <div style="font-size:1.6rem;font-weight:800;color:var(--green)">5/5 Sesuai</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px;">Perhitungan sistem = perhitungan manual untuk semua data uji</div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <h3>Perbandingan Pertumbuhan Sebelum &amp; Sesudah</h3>
+      <table class="sl" style="margin-top:6px;">
+        <thead><tr><th>Parameter</th><th>Sebelum</th><th>Sesudah</th></tr></thead>
+        <tbody>
+          <tr><td>Tinggi Tanaman</td><td>14–15 cm</td><td style="color:var(--green);font-weight:700;">15–16 cm ↑</td></tr>
+          <tr><td>Warna Daun</td><td>Hijau muda</td><td style="color:var(--green);font-weight:700;">Hijau segar ✓</td></tr>
+          <tr><td>Keseragaman</td><td>Kurang merata &amp; condong</td><td style="color:var(--green);font-weight:700;">Lebih merata &amp; tegap ✓</td></tr>
+          <tr><td>Pemantauan</td><td>Manual (datang ke lokasi)</td><td style="color:var(--accent);font-weight:700;">Real-time via web ✓</td></tr>
+          <tr><td>Penyiraman</td><td>Manual</td><td style="color:var(--accent);font-weight:700;">Otomatis (Fuzzy) ✓</td></tr>
+          <tr><td>Koreksi pH</td><td>Setelah cek manual</td><td style="color:var(--accent);font-weight:700;">Otomatis saat asam ✓</td></tr>
+        </tbody>
+      </table>
+      <div style="padding:12px 16px;background:rgba(79,142,247,.08);border:1px solid rgba(79,142,247,.25);border-radius:10px;font-size:.82rem;">
+        <strong>Kondisi lingkungan</strong> lebih stabil → pertumbuhan tanaman lebih terjaga karena aktuator bekerja otomatis berdasarkan hasil Fuzzy Tahani.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ SLIDE 11 – UAT ═══════════════════════ -->
+<div class="slide" data-num="11/12">
+  <span class="chip green">BAB IV – HASIL PENGUJIAN</span>
+  <h2>User Acceptance Test (UAT) &amp; Black Box Testing</h2>
+  <div class="g2" style="flex:1;align-items:start;">
+    <div>
+      <h3>Skenario Pengujian (3 Responden)</h3>
+      <div style="margin-top:8px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:.82rem;margin-bottom:10px;">
+        <strong>Responden:</strong> Bapak Ipat · Bapak Rumadi · Bapak Rohman<br>
+        <span style="color:var(--muted);">Petani Cabai Rawit — Jurang Pirikan, Secang, Magelang</span><br>
+        <span style="color:var(--muted);">Tanggal: Jum'at–Sabtu, 03–04 Juni 2026</span>
+      </div>
+      <table class="sl">
+        <thead><tr><th>UAT</th><th>Topik</th><th>Sesuai</th><th>Tidak</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge b">UAT-01A</span></td>
+            <td>Pembacaan sensor pH, suhu, kelembapan di dashboard web</td>
+            <td style="color:var(--green);font-weight:700;text-align:center;">9</td>
+            <td style="color:var(--muted);text-align:center;">0</td>
+          </tr>
+          <tr>
+            <td><span class="badge b">UAT-02A</span></td>
+            <td>Pengendalian aktuator secara manual via dashboard</td>
+            <td style="color:var(--green);font-weight:700;text-align:center;">9</td>
+            <td style="color:var(--muted);text-align:center;">0</td>
+          </tr>
+          <tr>
+            <td><span class="badge b">UAT-03A</span></td>
+            <td>Pengendalian otomatis menggunakan metode Fuzzy Tahani</td>
+            <td style="color:var(--green);font-weight:700;text-align:center;">9</td>
+            <td style="color:var(--muted);text-align:center;">0</td>
+          </tr>
+          <tr style="background:rgba(34,197,94,.06);">
+            <td colspan="2" style="font-weight:700;">TOTAL</td>
+            <td style="color:var(--green);font-weight:800;font-size:1rem;text-align:center;">27</td>
+            <td style="color:var(--muted);text-align:center;font-weight:700;">0</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <h3>Hasil Akhir UAT</h3>
+      <div style="background:rgba(34,197,94,.1);border:2px solid var(--green);border-radius:14px;padding:28px;text-align:center;">
+        <div style="font-size:3.5rem;font-weight:900;color:var(--green);line-height:1;">100%</div>
+        <div style="font-size:.9rem;color:var(--muted);margin-top:6px;">Tingkat Kesesuaian Sistem</div>
+        <div class="prog-wrap" style="margin:12px 0 4px;">
+          <div class="prog" style="width:100%;background:linear-gradient(90deg,var(--green),#34d399)"></div>
+        </div>
+        <div style="font-size:.78rem;color:var(--muted);">27 / (27 + 0) × 100 = 100%</div>
+      </div>
+      <ul class="fancy">
+        <li>Seluruh nilai sensor tampil akurat di dashboard real-time</li>
+        <li>Mode manual berfungsi — aktuator merespons perintah web</li>
+        <li>Fuzzy Tahani mengaktifkan aktuator sesuai kondisi lingkungan</li>
+        <li>Petani dapat memantau tanpa harus hadir ke greenhouse</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ SLIDE 12 – PENUTUP ═══════════════════════ -->
+<div class="slide" data-num="12/12">
+  <span class="chip purple">BAB V – PENUTUP</span>
+  <h2>Kesimpulan &amp; Saran</h2>
+  <div class="g2" style="flex:1;align-items:start;">
+    <div>
+      <h3>✅ Kesimpulan</h3>
+      <ul class="fancy" style="margin-top:10px;">
+        <li><strong>Sistem IoT ESP32</strong> berhasil memantau suhu udara, kelembapan tanah, dan pH tanah secara <span class="hl">real-time</span> melalui dashboard web</li>
+        <li><strong>Metode Fuzzy Tahani</strong> berhasil diterapkan untuk mengolah data sensor menjadi keputusan otomatis pengendalian lingkungan</li>
+        <li><strong>Protokol MQTT</strong> berjalan stabil — data terkirim dan tampil di dashboard tanpa delay signifikan</li>
+        <li>Seluruh sensor, aktuator &amp; fitur sistem berfungsi sesuai rancangan — <span class="hl2">UAT 100%</span></li>
+        <li>Akurasi sensor pH rata-rata <span class="hl">94.12%</span></li>
+        <li>Pertumbuhan tanaman lebih stabil setelah sistem diterapkan</li>
+      </ul>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <h3>🔭 Saran Pengembangan</h3>
+      <ul class="fancy">
+        <li>Tambah sensor <span class="hl3">intensitas cahaya</span> dan kelembapan udara untuk monitoring lebih lengkap</li>
+        <li>Gunakan sensor pH <span class="hl3">versi terbaru</span> dengan akurasi lebih tinggi</li>
+        <li>Kembangkan kontrol otomatis <span class="hl3">tirai peneduh</span> berbasis Fuzzy Tahani</li>
+        <li>Tambah fitur <span class="hl3">grafik pertumbuhan</span> &amp; notifikasi otomatis di dashboard</li>
+        <li>Integrasi <span class="hl3">machine learning</span> untuk prediksi kondisi tanaman berbasis data historis</li>
+      </ul>
+      <div style="padding:16px 18px;background:rgba(79,142,247,.08);border:1px solid rgba(79,142,247,.25);border-radius:12px;text-align:center;margin-top:8px;">
+        <div style="font-size:1.6rem;margin-bottom:6px;">🙏</div>
+        <div style="font-weight:700;font-size:1rem;margin-bottom:4px;">Terima Kasih</div>
+        <div style="font-size:.82rem;color:var(--muted);">Wassalamu'alaikum Wr. Wb.</div>
+        <div style="font-size:.78rem;color:var(--muted);margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
+          Mukhamad Sa'id Aqil · NIM. 2021150081<br>
+          Teknik Informatika · UNSIQ Wonosobo · 2026
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- end #stage -->
+
+<!-- DOTS -->
+<div id="dots"></div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+//  NAVIGASI SLIDE
+// ════════════════════════════════════════════════════════════════
+const slides = Array.from(document.querySelectorAll('.slide'));
+const total  = slides.length;
+let current  = 0;
+
+// Bangun dots
+const dotsEl = document.getElementById('dots');
+slides.forEach((_, i) => {
+  const d = document.createElement('div');
+  d.className = 'dot' + (i === 0 ? ' active' : '');
+  d.onclick   = () => goTo(i);
+  dotsEl.appendChild(d);
+});
+
+function goTo(n) {
+  slides[current].classList.remove('active');
+  dotsEl.children[current].classList.remove('active');
+  current = Math.max(0, Math.min(total - 1, n));
+  slides[current].classList.add('active');
+  dotsEl.children[current].classList.add('active');
+  document.getElementById('slide-counter').textContent = (current + 1) + ' / ' + total;
+  document.getElementById('btn-prev').disabled = current === 0;
+  document.getElementById('btn-next').disabled = current === total - 1;
+}
+
+function prevSlide() { goTo(current - 1); }
+function nextSlide() { goTo(current + 1); }
+goTo(0);  // init
+
+// Keyboard navigation
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown'  || e.key === ' ') { e.preventDefault(); nextSlide(); }
+  if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')                     { e.preventDefault(); prevSlide(); }
+  if (e.key === 'Home') goTo(0);
+  if (e.key === 'End')  goTo(total - 1);
+  // Number keys 1-9
+  const n = parseInt(e.key);
+  if (!isNaN(n) && n >= 1 && n <= total) goTo(n - 1);
+});
+
+// Touch / swipe support
+let touchStartX = 0;
+document.getElementById('stage').addEventListener('touchstart', e => {
+  touchStartX = e.touches[0].clientX;
+}, { passive: true });
+document.getElementById('stage').addEventListener('touchend', e => {
+  const dx = e.changedTouches[0].clientX - touchStartX;
+  if (Math.abs(dx) > 50) dx < 0 ? nextSlide() : prevSlide();
+});
+</script>
+</body>
+</html>
